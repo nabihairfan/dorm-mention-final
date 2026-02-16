@@ -3,81 +3,63 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { useRouter } from 'next/navigation';
 
-export default function DormMentionDashboard() {
+export default function Dashboard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [results, setResults] = useState([]);
   const router = useRouter();
 
   useEffect(() => {
-    const initializePage = async () => {
-      // 1. Check for Authentication Session
+    const getData = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        router.push('/login');
-        return;
-      }
+      if (!session) return router.push('/login');
       setUser(session.user);
 
-      // 2. Fetch Data from both tables
-      const { data: captionsData } = await supabase.from('captions').select('content');
-      const { data: dormsData } = await supabase.from('dorms').select('short_name');
+      const { data: captions } = await supabase.from('captions').select('content');
+      const { data: dorms } = await supabase.from('dorms').select('short_name');
 
-      if (captionsData && dormsData) {
-        // 3. Logic to count mentions
-        const counts = dormsData.map(dorm => {
-          const mentionCount = captionsData.filter(cap => 
-            cap.content?.toLowerCase().includes(dorm.short_name.toLowerCase())
-          ).length;
-          
-          return {
-            name: dorm.short_name,
-            count: mentionCount
-          };
-        });
-
-        // Sort by highest mentions
-        setResults(counts.sort((a, b) => b.count - a.count));
+      if (captions && dorms) {
+        const counts = dorms.map(d => ({
+          name: d.short_name,
+          count: captions.filter(c => c.content?.toLowerCase().includes(d.short_name.toLowerCase())).length
+        })).sort((a,b) => b.count - a.count);
+        setResults(counts);
       }
-      
       setLoading(false);
     };
-
-    initializePage();
+    getData();
   }, [router]);
 
-  if (loading) return <div style={{ padding: '50px', textAlign: 'center' }}>🔄 Loading Protected Data...</div>;
+  if (loading) return null;
 
   return (
-    <div style={{ fontFamily: 'sans-serif', maxWidth: '900px', margin: '0 auto', padding: '20px', color: '#333' }}>
-      {/* Navbar */}
-      <nav style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #eee', paddingBottom: '20px' }}>
-        <h2 style={{ margin: 0 }}>🏫 Dorm Mention Tracker</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <span style={{ fontSize: '14px', color: '#666' }}>{user.email}</span>
-          <button 
-            onClick={() => supabase.auth.signOut().then(() => window.location.reload())}
-            style={{ padding: '8px 16px', cursor: 'pointer', borderRadius: '5px', border: '1px solid #ccc' }}
-          >
-            Sign Out
-          </button>
+    <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: 'sans-serif' }}>
+      {/* Fun Header */}
+      <nav style={{ background: 'white', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 10px rgba(0,0,0,0.05)' }}>
+        <h1 style={{ margin: 0, background: 'linear-gradient(to right, #667eea, #764ba2)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: '900' }}>DormPulse.</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <span style={{ fontWeight: '600', color: '#475569' }}>👋 {user.email.split('@')[0]}</span>
+          <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={{ background: '#fee2e2', color: '#ef4444', border: 'none', padding: '10px 20px', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Logout</button>
         </div>
       </nav>
 
-      {/* Assignment Content */}
-      <main style={{ marginTop: '40px' }}>
-        <div style={{ backgroundColor: '#eefaff', padding: '15px', borderRadius: '8px', marginBottom: '30px' }}>
-          <h3 style={{ margin: '0 0 10px 0' }}>✅ Access Verified</h3>
-          <p style={{ margin: 0 }}>This data is pulled from the <strong>captions</strong> and <strong>dorms</strong> tables in your Supabase database.</p>
-        </div>
+      <main style={{ padding: '40px' }}>
+        <header style={{ marginBottom: '40px' }}>
+          <h2 style={{ fontSize: '32px', color: '#1e293b' }}>Live Dorm Mentions</h2>
+          <p style={{ color: '#64748b' }}>Real-time data from your Supabase captions table.</p>
+        </header>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '20px' }}>
-          {results.map((dorm, index) => (
-            <div key={index} style={{ padding: '20px', border: '1px solid #ddd', borderRadius: '10px', textAlign: 'center', background: '#fff', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-              <h4 style={{ margin: '0 0 10px 0', color: '#0070f3' }}>{dorm.name}</h4>
-              <div style={{ fontSize: '24px', fontWeight: 'bold' }}>{dorm.count}</div>
-              <div style={{ fontSize: '12px', color: '#999' }}>Mentions</div>
+        {/* Bento Grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px' }}>
+          {results.map((dorm, i) => (
+            <div key={i} style={{ background: 'white', padding: '30px', borderRadius: '24px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', border: '1px solid #e2e8f0', transition: 'transform 0.2s' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px' }}>
+                <span style={{ background: '#e0e7ff', color: '#4338ca', padding: '6px 12px', borderRadius: '10px', fontSize: '12px', fontWeight: '800' }}>DORM</span>
+                <span style={{ fontSize: '24px' }}>🏠</span>
+              </div>
+              <h3 style={{ fontSize: '22px', margin: '0 0 5px 0', color: '#1e293b' }}>{dorm.name}</h3>
+              <p style={{ margin: 0, fontSize: '48px', fontWeight: '800', color: '#6366f1' }}>{dorm.count}</p>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: '14px', fontWeight: '600' }}>TOTAL MENTIONS</p>
             </div>
           ))}
         </div>
