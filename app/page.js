@@ -9,35 +9,31 @@ export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
-    const fetchUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.push('/login'); // If no user, go to login
-      } else {
-        setUser(user);
+    const checkUser = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          router.push('/login');
+        } else {
+          setUser(session.user);
+        }
+      } catch (e) {
+        console.error("Auth error", e);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
-    fetchUser();
+    checkUser();
   }, [router]);
 
-  if (loading) return <div style={{ padding: '50px' }}>Loading...</div>;
+  if (loading) return <div style={{padding: '20px'}}>Loading...</div>;
+  if (!user) return null; // Prevents the flicker before redirect
 
   return (
     <div style={{ padding: '50px', fontFamily: 'sans-serif' }}>
-      <h1>✅ Success! You are signed in.</h1>
-      <p>Welcome back, <strong>{user.email}</strong></p>
-      <div style={{ marginTop: '20px', padding: '20px', border: '1px solid #ccc', borderRadius: '8px' }}>
-        <h3>Protected Website Content</h3>
-        <p>This information is only visible to authenticated students.</p>
-      </div>
-      <button 
-        onClick={async () => {
-          await supabase.auth.signOut();
-          router.push('/login');
-        }}
-        style={{ marginTop: '20px', cursor: 'pointer' }}
-      >
+      <h1>✅ Access Granted</h1>
+      <p>Welcome, {user.email}</p>
+      <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())}>
         Sign Out
       </button>
     </div>
