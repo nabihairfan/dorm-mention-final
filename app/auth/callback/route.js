@@ -9,25 +9,21 @@ export async function GET(request) {
   if (code) {
     const cookieStore = cookies()
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://secure.almostcrackd.ai',
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...', 
       {
         cookies: {
           get(name) { return cookieStore.get(name)?.value },
-          set(name, value, options) {
-            cookieStore.set({ name, value, ...options })
-          },
-          remove(name, options) {
-            cookieStore.set({ name, value: '', ...options })
-          },
+          set(name, value, options) { cookieStore.set({ name, value, ...options }) },
+          remove(name, options) { cookieStore.set({ name, value: '', ...options }) },
         },
       }
     )
     
-    // Exchange the code for a session
+    // Exchange code for session (SSR Wiring)
     await supabase.auth.exchangeCodeForSession(code)
   }
 
-  // Redirect to the protected root page
+  // Redirect back to the protected homepage
   return NextResponse.redirect(`${origin}/`)
 }

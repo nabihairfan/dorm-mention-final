@@ -1,39 +1,40 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
-export default function ProtectedPage() {
+export default function ProtectedDashboard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
   useEffect(() => {
-    const getUser = async () => {
+    const checkUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      setUser(user);
+      if (!user) {
+        router.push('/login'); // Protection logic
+      } else {
+        setUser(user);
+      }
       setLoading(false);
     };
-    getUser();
-  }, []);
+    checkUser();
+  }, [router]);
 
-  if (loading) return <p>Loading...</p>;
-
-  if (!user) {
-    return (
-      <div style={{ padding: '50px', textAlign: 'center' }}>
-        <h1>🛑 Gated Content</h1>
-        <p>This route is protected.</p>
-        <Link href="/login">Go to Login</Link>
-      </div>
-    );
-  }
+  if (loading) return <div style={{ padding: '20px' }}>Loading...</div>;
 
   return (
-    <div style={{ padding: '50px' }}>
+    <div style={{ padding: '40px', fontFamily: 'sans-serif' }}>
       <h1>✅ Access Granted</h1>
-      <p>Welcome, {user.email}</p>
-      <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())}>
-        Logout
+      <p>Welcome to the protected dashboard, <strong>{user?.email}</strong></p>
+      <button 
+        onClick={async () => {
+          await supabase.auth.signOut();
+          router.push('/login');
+        }}
+        style={{ marginTop: '20px', padding: '10px', cursor: 'pointer' }}
+      >
+        Sign Out
       </button>
     </div>
   );
