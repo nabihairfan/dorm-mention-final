@@ -17,11 +17,9 @@ export default function ConfessionsBoard() {
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      // Fetch captions
       const { data: captionsData } = await supabase.from('captions').select('id, content').limit(30);
       
       if (captionsData) {
-        // Fetch existing votes using the correct 'profile_id' column
         const { data: existingVotes } = await supabase
           .from('caption_votes')
           .select('caption_id, vote_value')
@@ -45,14 +43,15 @@ export default function ConfessionsBoard() {
   const handleVote = async (captionId, voteValue) => {
     if (!user) return;
 
-    // DATA MUTATION: Using 'vote_value' as identified in your schema
+    // THE FIX: Adding created_datetime_utc because the database requires it
     const { error } = await supabase
       .from('caption_votes')
       .upsert(
         { 
           caption_id: captionId, 
           profile_id: user.id, 
-          vote_value: voteValue // Saves 1 for Fire, -1 for Trash
+          vote_value: voteValue,
+          created_datetime_utc: new Date().toISOString() // Manually sending the timestamp
         }, 
         { onConflict: 'caption_id, profile_id' }
       );
@@ -61,7 +60,6 @@ export default function ConfessionsBoard() {
       console.error("Mutation failed:", error.message);
       alert(`Database Error: ${error.message}`);
     } else {
-      // Immediate UI update so the buttons highlight instantly
       setCaptions(prev => prev.map(c => 
         c.id === captionId ? { ...c, userVote: voteValue } : c
       ));
