@@ -60,22 +60,33 @@ export default function ConfessionsBoard() {
     const currentCard = captions.find(c => c.id === captionId);
     const isRemoving = currentCard?.userVote === voteValue;
 
-    setCaptions(prev => prev.map(c => {
-      if (c.id === captionId) {
-        let newFire = c.globalFire;
-        let newTrash = c.globalTrash;
-        if (isRemoving) {
-          voteValue === 1 ? newFire = Math.max(0, newFire - 1) : newTrash = Math.max(0, newTrash - 1);
-        } else {
-          if (c.userVote === 1) newFire = Math.max(0, newFire - 1);
-          if (c.userVote === -1) newTrash = Math.max(0, newTrash - 1);
-          voteValue === 1 ? newFire++ : newTrash++;
+    // --- INSTANT UI UPDATE FOR CARDS AND BOTTOM SCOREBOARD ---
+    setCaptions(prev => {
+      const updatedCaptions = prev.map(c => {
+        if (c.id === captionId) {
+          let newFire = c.globalFire;
+          let newTrash = c.globalTrash;
+          if (isRemoving) {
+            voteValue === 1 ? newFire = Math.max(0, newFire - 1) : newTrash = Math.max(0, newTrash - 1);
+          } else {
+            if (c.userVote === 1) newFire = Math.max(0, newFire - 1);
+            if (c.userVote === -1) newTrash = Math.max(0, newTrash - 1);
+            voteValue === 1 ? newFire++ : newTrash++;
+          }
+          return { ...c, userVote: isRemoving ? null : voteValue, globalFire: newFire, globalTrash: newTrash };
         }
-        return { ...c, userVote: isRemoving ? null : voteValue, globalFire: newFire, globalTrash: newTrash };
-      }
-      return c;
-    }));
+        return c;
+      });
 
+      // Recalculate the bottom scoreboard based on the new caption state
+      const newMyFire = updatedCaptions.filter(c => c.userVote === 1).length;
+      const newMyTrash = updatedCaptions.filter(c => c.userVote === -1).length;
+      setMyStats({ fire: newMyFire, trash: newMyTrash });
+
+      return updatedCaptions;
+    });
+
+    // --- DATABASE UPDATE ---
     if (isRemoving) {
       await supabase.from('caption_votes').delete().eq('caption_id', captionId).eq('profile_id', user.id);
     } else {
