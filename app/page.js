@@ -7,133 +7,158 @@ export default function ConfessionsBoard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]);
+  const [myStats, setMyStats] = useState({ fire: 0, trash: 0 });
   const router = useRouter();
 
   const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
 
   useEffect(() => {
-    const fetchSessionAndData = async () => {
+    const fetchEverything = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      const { data: captionsData } = await supabase.from('captions').select('id, content').limit(30);
+      // 1. Fetch All Captions
+      const { data: captionsData } = await supabase.from('captions').select('id, content').limit(20);
       
-      if (captionsData) {
-        const { data: existingVotes } = await supabase
-          .from('caption_votes')
-          .select('caption_id, vote_value')
-          .eq('profile_id', session.user.id);
+      // 2. Fetch Global Vote Counts (Summed up for everyone)
+      const { data: allVotes } = await supabase.from('caption_votes').select('caption_id, vote_value');
 
-        const formattedCaptions = captionsData.map(cap => {
-          const pastVote = existingVotes?.find(v => v.caption_id === cap.id);
+      // 3. Fetch My Votes (To highlight buttons)
+      const { data: myVotes } = await supabase
+        .from('caption_votes')
+        .select('caption_id, vote_value')
+        .eq('profile_id', session.user.id);
+
+      if (captionsData) {
+        const formatted = captionsData.map(cap => {
+          const myVoteEntry = myVotes?.find(v => v.caption_id === cap.id);
+          const globalFire = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === 1).length || 0;
+          const globalTrash = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === -1).length || 0;
+
           return {
             ...cap,
-            userVote: pastVote ? pastVote.vote_value : null 
+            userVote: myVoteEntry ? myVoteEntry.vote_value : null,
+            globalFire,
+            globalTrash
           };
         });
 
-        setCaptions(formattedCaptions);
+        setCaptions(formatted);
+        
+        // Update the Scoreboard
+        setMyStats({
+          fire: myVotes?.filter(v => v.vote_value === 1).length || 0,
+          trash: myVotes?.filter(v => v.vote_value === -1).length || 0
+        });
       }
       setLoading(false);
     };
-    fetchSessionAndData();
+    fetchEverything();
   }, [router]);
 
   const handleVote = async (captionId, voteValue) => {
     if (!user) return;
 
-    // THE FIX: Adding created_datetime_utc because the database requires it
     const { error } = await supabase
       .from('caption_votes')
-      .upsert(
-        { 
-          caption_id: captionId, 
-          profile_id: user.id, 
-          vote_value: voteValue,
-          created_datetime_utc: new Date().toISOString() // Manually sending the timestamp
-        }, 
-        { onConflict: 'caption_id, profile_id' }
-      );
+      .upsert({ 
+        caption_id: captionId, 
+        profile_id: user.id, 
+        vote_value: voteValue,
+        created_datetime_utc: new Date().toISOString()
+      }, { onConflict: 'caption_id, profile_id' });
 
-    if (error) {
-      console.error("Mutation failed:", error.message);
-      alert(`Database Error: ${error.message}`);
-    } else {
-      setCaptions(prev => prev.map(c => 
-        c.id === captionId ? { ...c, userVote: voteValue } : c
-      ));
+    if (!error) {
+      // Update UI state immediately
+      setCaptions(prev => prev.map(c => {
+        if (c.id === captionId) {
+          // If user is switching votes, adjust global counts
+          const oldVote = c.userVote;
+          return { 
+            ...c, 
+            userVote: voteValue,
+            globalFire: voteValue === 1 && oldVote !== 1 ? c.globalFire + 1 : (oldVote === 1 && voteValue !== 1 ? c.globalFire - 1 : c.globalFire),
+            globalTrash: voteValue === -1 && oldVote !== -1 ? c.globalTrash + 1 : (oldVote === -1 && voteValue !== -1 ? c.globalTrash - 1 : c.globalTrash)
+          };
+        }
+        return c;
+      }));
+
+      // Recalculate personal scoreboard
+      const { data: myNewVotes } = await supabase.from('caption_votes').select('vote_value').eq('profile_id', user.id);
+      setMyStats({
+        fire: myNewVotes?.filter(v => v.vote_value === 1).length || 0,
+        trash: myNewVotes?.filter(v => v.vote_value === -1).length || 0
+      });
     }
   };
 
-  if (loading) return <div style={styles.loader}>✨ Syncing the campus vibes...</div>;
+  if (loading) return <div style={styles.loader}>🌈 Prepping the Vibe...</div>;
 
   return (
     <div style={styles.page}>
+      {/* 🏆 THE SCOREBOARD */}
+      <div style={styles.scoreboard}>
+        <div style={styles.scoreItem}>🔥 {myStats.fire} <span style={styles.scoreLabel}>GEMS</span></div>
+        <div style={styles.scoreItem}>🗑️ {myStats.trash} <span style={styles.scoreLabel}>TRASHED</span></div>
+      </div>
+
       <nav style={styles.nav}>
         <h1 style={styles.logo}>DormPulse ✨</h1>
-        <div style={styles.userSection}>
-          <span style={styles.email}>{user.email}</span>
-          <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logout}>Sign Out</button>
-        </div>
+        <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logout}>Bye!</button>
       </nav>
 
       <header style={styles.header}>
-        <h2 style={styles.title}>Campus Feed</h2>
-        <p style={styles.subtitle}>Click a card to cast your vote. 🔥 (1) | 🗑️ (-1)</p>
+        <h2 style={styles.title}>Campus Tea ☕</h2>
+        <p style={styles.subtitle}>Wobble the cards, vote the vibes. What's the campus thinking?</p>
       </header>
 
       <div style={styles.masonryGrid}>
         {captions.map((cap, i) => (
-          <div key={cap.id} style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
+          <div key={cap.id} className="wiggle-card" style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
             <p style={styles.cardText}>“{cap.content}”</p>
             
-            <div style={styles.actionRow}>
-              <button 
-                onClick={() => handleVote(cap.id, 1)} 
-                style={{
-                  ...styles.voteBtn, 
-                  backgroundColor: cap.userVote === 1 ? '#4ade80' : 'rgba(255,255,255,0.6)',
-                  color: cap.userVote === 1 ? 'white' : '#1e293b',
-                  boxShadow: cap.userVote === 1 ? '0 4px 12px rgba(74, 222, 128, 0.4)' : 'none'
-                }}
-              >
-                🔥 Fire
-              </button>
+            <div style={styles.voteContainer}>
+              <div style={styles.voteBox}>
+                <button onClick={() => handleVote(cap.id, 1)} style={{...styles.voteBtn, backgroundColor: cap.userVote === 1 ? '#4ade80' : 'white'}}>🔥</button>
+                <span style={styles.globalCount}>{cap.globalFire}</span>
+              </div>
               
-              <button 
-                onClick={() => handleVote(cap.id, -1)} 
-                style={{
-                  ...styles.voteBtn, 
-                  backgroundColor: cap.userVote === -1 ? '#f87171' : 'rgba(255,255,255,0.6)',
-                  color: cap.userVote === -1 ? 'white' : '#1e293b',
-                  boxShadow: cap.userVote === -1 ? '0 4px 12px rgba(248, 113, 113, 0.4)' : 'none'
-                }}
-              >
-                🗑️ Trash
-              </button>
+              <div style={styles.voteBox}>
+                <button onClick={() => handleVote(cap.id, -1)} style={{...styles.voteBtn, backgroundColor: cap.userVote === -1 ? '#f87171' : 'white'}}>🗑️</button>
+                <span style={styles.globalCount}>{cap.globalTrash}</span>
+              </div>
             </div>
           </div>
         ))}
       </div>
+
+      <style jsx>{`
+        .wiggle-card { transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .wiggle-card:hover { transform: scale(1.03) rotate(${Math.random() > 0.5 ? '2' : '-2'}deg); cursor: pointer; box-shadow: 0 20px 30px rgba(0,0,0,0.1); }
+      `}</style>
     </div>
   );
 }
 
 const styles = {
-  page: { minHeight: '100vh', background: '#ffffff', padding: '0 20px 50px 20px', fontFamily: '-apple-system, sans-serif' },
-  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 0', borderBottom: '1px solid #f1f5f9' },
-  logo: { fontSize: '24px', fontWeight: '900', color: '#6366f1' },
-  userSection: { display: 'flex', alignItems: 'center', gap: '15px' },
-  email: { fontSize: '13px', color: '#64748b', fontWeight: '600' },
-  logout: { padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontSize: '12px', fontWeight: '700' },
-  header: { textAlign: 'center', margin: '50px 0' },
-  title: { fontSize: '52px', fontWeight: '900', margin: '0 0 10px 0', letterSpacing: '-2px' },
-  subtitle: { color: '#64748b', fontSize: '18px' },
-  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px', maxWidth: '1100px', margin: '0 auto' },
-  card: { padding: '30px', borderRadius: '28px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '190px', boxShadow: '0 8px 20px -6px rgba(0,0,0,0.05)' },
-  cardText: { fontSize: '20px', fontWeight: '800', color: '#1e293b', lineHeight: '1.3' },
-  actionRow: { display: 'flex', gap: '10px' },
-  voteBtn: { flex: 1, padding: '12px', borderRadius: '14px', border: 'none', fontWeight: '800', cursor: 'pointer', transition: 'all 0.2s' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: '700', color: '#6366f1' }
+  page: { minHeight: '100vh', background: '#fff', padding: '0 20px 100px 20px', fontFamily: '"Comic Sans MS", "Chalkboard SE", sans-serif' },
+  scoreboard: { position: 'fixed', bottom: '30px', left: '50%', transform: 'translateX(-50%)', background: '#1e293b', color: 'white', padding: '15px 30px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 10px 30px rgba(0,0,0,0.3)', zIndex: 1000, border: '3px solid #6366f1' },
+  scoreItem: { fontSize: '20px', fontWeight: 'bold', display: 'flex', flexDirection: 'column', alignItems: 'center' },
+  scoreLabel: { fontSize: '10px', opacity: 0.7 },
+  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 0' },
+  logo: { fontSize: '28px', fontWeight: '900', color: '#6366f1' },
+  logout: { padding: '10px 20px', borderRadius: '50px', border: '2px solid #000', background: 'white', fontWeight: 'bold', cursor: 'pointer' },
+  header: { textAlign: 'center', margin: '40px 0' },
+  title: { fontSize: '60px', fontWeight: '900', margin: '0', letterSpacing: '-3px' },
+  subtitle: { color: '#64748b', fontSize: '20px' },
+  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '30px', maxWidth: '1200px', margin: '0 auto' },
+  card: { padding: '30px', borderRadius: '40px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '220px', border: '3px solid #000' },
+  cardText: { fontSize: '22px', fontWeight: '900', color: '#000', lineHeight: '1.2' },
+  voteContainer: { display: 'flex', justifyContent: 'space-around', alignItems: 'center', marginTop: '20px' },
+  voteBox: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px' },
+  voteBtn: { width: '60px', height: '60px', borderRadius: '50%', border: '3px solid #000', fontSize: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: '0.2s' },
+  globalCount: { fontWeight: '900', fontSize: '16px', color: '#000' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: '900' }
 };
