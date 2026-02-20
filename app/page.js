@@ -11,55 +11,51 @@ export default function ConfessionsBoard() {
   const router = useRouter();
 
   const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
+  const floatingEmojis = ['🍕', '🎸', '📚', '🦄', '⚡️', '🎈', '🍦', '👽'];
 
-  useEffect(() => {
-    const fetchEverything = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return router.push('/login');
-      setUser(session.user);
+  const fetchEverything = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return router.push('/login');
+    setUser(session.user);
 
-      // 1. Fetch All Captions
-      const { data: captionsData } = await supabase.from('captions').select('id, content').limit(20);
-      
-      // 2. Fetch Global Vote Counts (Summed up for everyone)
-      const { data: allVotes } = await supabase.from('caption_votes').select('caption_id, vote_value');
+    const { data: captionsData } = await supabase.from('captions').select('id, content').limit(25);
+    const { data: allVotes } = await supabase.from('caption_votes').select('caption_id, vote_value');
+    const { data: myVotes } = await supabase.from('caption_votes').select('caption_id, vote_value').eq('profile_id', session.user.id);
 
-      // 3. Fetch My Votes (To highlight buttons)
-      const { data: myVotes } = await supabase
-        .from('caption_votes')
-        .select('caption_id, vote_value')
-        .eq('profile_id', session.user.id);
+    if (captionsData) {
+      const formatted = captionsData.map(cap => {
+        const myVoteEntry = myVotes?.find(v => v.caption_id === cap.id);
+        const globalFire = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === 1).length || 0;
+        const globalTrash = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === -1).length || 0;
+        return { ...cap, userVote: myVoteEntry ? myVoteEntry.vote_value : null, globalFire, globalTrash };
+      });
+      setCaptions(formatted);
+      setMyStats({
+        fire: myVotes?.filter(v => v.vote_value === 1).length || 0,
+        trash: myVotes?.filter(v => v.vote_value === -1).length || 0
+      });
+    }
+    setLoading(false);
+  };
 
-      if (captionsData) {
-        const formatted = captionsData.map(cap => {
-          const myVoteEntry = myVotes?.find(v => v.caption_id === cap.id);
-          const globalFire = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === 1).length || 0;
-          const globalTrash = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === -1).length || 0;
-
-          return {
-            ...cap,
-            userVote: myVoteEntry ? myVoteEntry.vote_value : null,
-            globalFire,
-            globalTrash
-          };
-        });
-
-        setCaptions(formatted);
-        
-        // Update the Scoreboard
-        setMyStats({
-          fire: myVotes?.filter(v => v.vote_value === 1).length || 0,
-          trash: myVotes?.filter(v => v.vote_value === -1).length || 0
-        });
-      }
-      setLoading(false);
-    };
-    fetchEverything();
-  }, [router]);
+  useEffect(() => { fetchEverything(); }, [router]);
 
   const handleVote = async (captionId, voteValue) => {
-    if (!user) return;
+    const currentCaption = captions.find(c => c.id === captionId);
+    
+    // TOGGLE LOGIC: If I click the same button again, DELETE the vote
+    if (currentCaption.userVote === voteValue) {
+      const { error } = await supabase
+        .from('caption_votes')
+        .delete()
+        .eq('caption_id', captionId)
+        .eq('profile_id', user.id);
+      
+      if (!error) fetchEverything(); // Refresh to show it's gone
+      return;
+    }
 
+    // UPSERT LOGIC: Otherwise, save/change vote
     const { error } = await supabase
       .from('caption_votes')
       .upsert({ 
@@ -69,96 +65,82 @@ export default function ConfessionsBoard() {
         created_datetime_utc: new Date().toISOString()
       }, { onConflict: 'caption_id, profile_id' });
 
-    if (!error) {
-      // Update UI state immediately
-      setCaptions(prev => prev.map(c => {
-        if (c.id === captionId) {
-          // If user is switching votes, adjust global counts
-          const oldVote = c.userVote;
-          return { 
-            ...c, 
-            userVote: voteValue,
-            globalFire: voteValue === 1 && oldVote !== 1 ? c.globalFire + 1 : (oldVote === 1 && voteValue !== 1 ? c.globalFire - 1 : c.globalFire),
-            globalTrash: voteValue === -1 && oldVote !== -1 ? c.globalTrash + 1 : (oldVote === -1 && voteValue !== -1 ? c.globalTrash - 1 : c.globalTrash)
-          };
-        }
-        return c;
-      }));
+    if (!error) fetchEverything();
+  };
 
-      // Recalculate personal scoreboard
-      const { data: myNewVotes } = await supabase.from('caption_votes').select('vote_value').eq('profile_id', user.id);
-      setMyStats({
-        fire: myNewVotes?.filter(v => v.vote_value === 1).length || 0,
-        trash: myNewVotes?.filter(v => v.vote_value === -1).length || 0
-      });
+  const resetAllVotes = async () => {
+    if (confirm("🚨 BOOM! Delete all your votes and start fresh?")) {
+      const { error } = await supabase.from('caption_votes').delete().eq('profile_id', user.id);
+      if (!error) fetchEverything();
     }
   };
 
-  if (loading) return <div style={styles.loader}>🌈 Prepping the Vibe...</div>;
+  if (loading) return <div style={styles.loader}>🍭 Loading Vibes...</div>;
 
   return (
     <div style={styles.page}>
-      {/* 🏆 THE SCOREBOARD */}
-      <div style={styles.scoreboard}>
-        <div style={styles.scoreItem}>🔥 {myStats.fire} <span style={styles.scoreLabel}>GEMS</span></div>
-        <div style={styles.scoreItem}>🗑️ {myStats.trash} <span style={styles.scoreLabel}>TRASHED</span></div>
+      {/* 🎈 FLOATING DECOR */}
+      {floatingEmojis.map((emoji, i) => (
+        <div key={i} style={{...styles.floating, left: `${i * 12}%`, animationDelay: `${i * 0.5}s`}}>{emoji}</div>
+      ))}
+
+      {/* 🏆 THE SCOREBOARD & RESET */}
+      <div style={styles.controlCenter}>
+        <div style={styles.scoreboard}>
+          <div style={styles.scoreItem}>🔥 {myStats.fire}</div>
+          <div style={styles.scoreItem}>🗑️ {myStats.trash}</div>
+        </div>
+        <button onClick={resetAllVotes} style={styles.resetBtn}>☢️ RESET VIBES</button>
       </div>
 
       <nav style={styles.nav}>
-        <h1 style={styles.logo}>DormPulse ✨</h1>
-        <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logout}>Bye!</button>
+        <h1 style={styles.logo}>DormPulse.</h1>
+        <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logout}>Logout</button>
       </nav>
 
       <header style={styles.header}>
-        <h2 style={styles.title}>Campus Tea ☕</h2>
-        <p style={styles.subtitle}>Wobble the cards, vote the vibes. What's the campus thinking?</p>
+        <h2 style={styles.title}>The Social Wall</h2>
+        <p style={styles.subtitle}>Click twice to un-vote. Everything is saved live!</p>
       </header>
 
       <div style={styles.masonryGrid}>
         {captions.map((cap, i) => (
-          <div key={cap.id} className="wiggle-card" style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
+          <div key={cap.id} className="fun-card" style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
             <p style={styles.cardText}>“{cap.content}”</p>
-            
             <div style={styles.voteContainer}>
-              <div style={styles.voteBox}>
-                <button onClick={() => handleVote(cap.id, 1)} style={{...styles.voteBtn, backgroundColor: cap.userVote === 1 ? '#4ade80' : 'white'}}>🔥</button>
-                <span style={styles.globalCount}>{cap.globalFire}</span>
-              </div>
-              
-              <div style={styles.voteBox}>
-                <button onClick={() => handleVote(cap.id, -1)} style={{...styles.voteBtn, backgroundColor: cap.userVote === -1 ? '#f87171' : 'white'}}>🗑️</button>
-                <span style={styles.globalCount}>{cap.globalTrash}</span>
-              </div>
+              <button onClick={() => handleVote(cap.id, 1)} style={{...styles.voteBtn, border: cap.userVote === 1 ? '5px solid #4ade80' : '3px solid #000'}}>🔥 {cap.globalFire}</button>
+              <button onClick={() => handleVote(cap.id, -1)} style={{...styles.voteBtn, border: cap.userVote === -1 ? '5px solid #f87171' : '3px solid #000'}}>🗑️ {cap.globalTrash}</button>
             </div>
           </div>
         ))}
       </div>
 
       <style jsx>{`
-        .wiggle-card { transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
-        .wiggle-card:hover { transform: scale(1.03) rotate(${Math.random() > 0.5 ? '2' : '-2'}deg); cursor: pointer; box-shadow: 0 20px 30px rgba(0,0,0,0.1); }
+        @keyframes float { 0% { transform: translateY(0px) rotate(0deg); } 50% { transform: translateY(-20px) rotate(10deg); } 100% { transform: translateY(0px) rotate(0deg); } }
+        .fun-card { transition: all 0.2s ease; }
+        .fun-card:hover { transform: translateY(-10px) rotate(${i % 2 === 0 ? '2' : '-2'}deg); z-index: 10; }
+        .fun-card:active { transform: scale(0.95); }
       `}</style>
     </div>
   );
 }
 
 const styles = {
-  page: { minHeight: '100vh', background: '#fff', padding: '0 20px 100px 20px', fontFamily: '"Comic Sans MS", "Chalkboard SE", sans-serif' },
-  scoreboard: { position: 'fixed', bottom: '30px', left: '50%', transform: 'translateX(-50%)', background: '#1e293b', color: 'white', padding: '15px 30px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 10px 30px rgba(0,0,0,0.3)', zIndex: 1000, border: '3px solid #6366f1' },
-  scoreItem: { fontSize: '20px', fontWeight: 'bold', display: 'flex', flexDirection: 'column', alignItems: 'center' },
-  scoreLabel: { fontSize: '10px', opacity: 0.7 },
-  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 0' },
-  logo: { fontSize: '28px', fontWeight: '900', color: '#6366f1' },
-  logout: { padding: '10px 20px', borderRadius: '50px', border: '2px solid #000', background: 'white', fontWeight: 'bold', cursor: 'pointer' },
-  header: { textAlign: 'center', margin: '40px 0' },
-  title: { fontSize: '60px', fontWeight: '900', margin: '0', letterSpacing: '-3px' },
-  subtitle: { color: '#64748b', fontSize: '20px' },
-  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '30px', maxWidth: '1200px', margin: '0 auto' },
-  card: { padding: '30px', borderRadius: '40px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '220px', border: '3px solid #000' },
-  cardText: { fontSize: '22px', fontWeight: '900', color: '#000', lineHeight: '1.2' },
-  voteContainer: { display: 'flex', justifyContent: 'space-around', alignItems: 'center', marginTop: '20px' },
-  voteBox: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px' },
-  voteBtn: { width: '60px', height: '60px', borderRadius: '50%', border: '3px solid #000', fontSize: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: '0.2s' },
-  globalCount: { fontWeight: '900', fontSize: '16px', color: '#000' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: '900' }
+  page: { minHeight: '100vh', background: '#FFFAFF', padding: '20px', fontFamily: '"Jua", sans-serif', overflowX: 'hidden', position: 'relative' },
+  floating: { position: 'fixed', top: '20%', fontSize: '40px', opacity: 0.15, zIndex: 0, animation: 'float 4s infinite ease-in-out' },
+  controlCenter: { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center', zIndex: 100 },
+  scoreboard: { background: '#000', color: '#fff', padding: '10px 30px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 10px 0 #6366f1' },
+  resetBtn: { background: '#ff4757', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer', fontSize: '10px', boxShadow: '0 4px 0 #8b0000' },
+  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'relative', zIndex: 10 },
+  logo: { fontSize: '32px', fontWeight: '900', fontStyle: 'italic', color: '#000' },
+  logout: { background: '#000', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '10px', cursor: 'pointer' },
+  header: { textAlign: 'center', margin: '40px 0', position: 'relative', zIndex: 10 },
+  title: { fontSize: '70px', fontWeight: '900', margin: '0', textShadow: '4px 4px 0px #6366f1' },
+  subtitle: { fontSize: '20px', fontWeight: '600' },
+  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '30px', maxWidth: '1200px', margin: '0 auto', position: 'relative', zIndex: 10 },
+  card: { padding: '30px', borderRadius: '30px', border: '4px solid #000', minHeight: '200px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '10px 10px 0px #000' },
+  cardText: { fontSize: '22px', fontWeight: '900' },
+  voteContainer: { display: 'flex', gap: '10px' },
+  voteBtn: { flex: 1, padding: '15px', borderRadius: '20px', background: 'white', fontWeight: 'bold', fontSize: '18px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '40px', fontWeight: 'bold' }
 };
