@@ -20,7 +20,6 @@ export default function ConfessionsBoard() {
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      // 1. Fetch captions and SORT BY ID so they never jump around
       const { data: captionsData } = await supabase
         .from('captions')
         .select('id, content')
@@ -61,18 +60,15 @@ export default function ConfessionsBoard() {
     if (!user) return;
     const currentCaption = captions.find(c => c.id === captionId);
     
-    // Toggle Undo
     if (currentCaption?.userVote === voteValue) {
       await supabase.from('caption_votes').delete().eq('caption_id', captionId).eq('profile_id', user.id);
-      fetchEverything();
+      await fetchEverything();
       return;
     }
 
-    // Effect
     setVibeEffect(voteValue === 1 ? 'fire' : 'trash');
     setTimeout(() => setVibeEffect(null), 1000);
 
-    // Save
     await supabase.from('caption_votes').upsert({ 
       caption_id: captionId, 
       profile_id: user.id, 
@@ -80,7 +76,14 @@ export default function ConfessionsBoard() {
       created_datetime_utc: new Date().toISOString()
     }, { onConflict: 'caption_id, profile_id' });
 
-    fetchEverything();
+    await fetchEverything();
+  };
+
+  const resetAllVotes = async () => {
+    if (typeof window !== "undefined" && window.confirm("🚨 Delete ALL your votes?")) {
+      const { error } = await supabase.from('caption_votes').delete().eq('profile_id', user.id);
+      if (!error) await fetchEverything();
+    }
   };
 
   const toggleStats = (id) => {
@@ -99,6 +102,7 @@ export default function ConfessionsBoard() {
           <div style={styles.scoreItem}>🔥 {myStats.fire} <span style={styles.miniLabel}>GEMS</span></div>
           <div style={styles.scoreItem}>🗑️ {myStats.trash} <span style={styles.miniLabel}>TRASH</span></div>
         </div>
+        <button onClick={resetAllVotes} style={styles.resetBtn}>☢️ RESET ALL VOTES</button>
       </div>
 
       <nav style={styles.nav}>
@@ -108,7 +112,7 @@ export default function ConfessionsBoard() {
 
       <header style={styles.header}>
         <h2 style={styles.title}>The Social Wall</h2>
-        <p style={styles.subtitle}>Vote privately. Click a colored button again to remove your vote.</p>
+        <p style={styles.subtitle}>Vote privately. Re-click a button to undo your vote.</p>
       </header>
 
       <div style={styles.fixedGrid}>
@@ -136,7 +140,9 @@ export default function ConfessionsBoard() {
                   backgroundColor: cap.userVote === 1 ? '#4ade80' : '#FFF',
                   color: cap.userVote === 1 ? '#FFF' : '#000'
                 }}
-              >🔥 FIRE</button>
+              >
+                {cap.userVote === 1 ? '🔥 FIRE | +1' : '🔥 FIRE'}
+              </button>
               <button 
                 onClick={() => handleVote(cap.id, -1)} 
                 style={{
@@ -144,7 +150,9 @@ export default function ConfessionsBoard() {
                   backgroundColor: cap.userVote === -1 ? '#f87171' : '#FFF',
                   color: cap.userVote === -1 ? '#FFF' : '#000'
                 }}
-              >🗑️ TRASH</button>
+              >
+                {cap.userVote === -1 ? '🗑️ TRASH | -1' : '🗑️ TRASH'}
+              </button>
             </div>
           </div>
         ))}
@@ -156,18 +164,18 @@ export default function ConfessionsBoard() {
 const styles = {
   page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'sans-serif' },
   effectOverlay: { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '100px', pointerEvents: 'none', zIndex: 1000 },
-  controlCenter: { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 100 },
+  controlCenter: { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', zIndex: 100 },
   scoreboard: { background: '#000', color: '#fff', padding: '12px 35px', borderRadius: '50px', display: 'flex', gap: '30px', border: '3px solid #6366f1' },
   scoreItem: { fontSize: '24px', fontWeight: '900', textAlign: 'center' },
   miniLabel: { fontSize: '10px', display: 'block', opacity: 0.6 },
+  resetBtn: { background: '#ff4757', color: 'white', border: '2px solid #000', padding: '6px 15px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer', fontSize: '11px', boxShadow: '0 4px 0 #8b0000' },
   nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   logo: { fontSize: '32px', fontWeight: '900', color: '#000' },
   logout: { background: '#000', color: '#fff', padding: '10px 20px', borderRadius: '12px', border: 'none', cursor: 'pointer', fontWeight: 'bold' },
   header: { textAlign: 'center', margin: '40px 0' },
   title: { fontSize: 'clamp(32px, 8vw, 60px)', fontWeight: '900' },
   subtitle: { fontSize: '16px', color: '#555' },
-  // FIXED GRID: This prevents the cards from shifting during data updates
-  fixedGrid: { display: 'flex', flexWrap: 'wrap', gap: '20px', justifyContent: 'center', maxWidth: '1200px', margin: '0 auto' },
+  fixedGrid: { display: 'flex', flexWrap: 'wrap', gap: '20px', justifyContent: 'center', maxWidth: '1200px', margin: '0 auto', paddingBottom: '120px' },
   card: { width: '320px', padding: '25px', borderRadius: '25px', border: '4px solid #000', minHeight: '280px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '8px 8px 0px #000' },
   cardText: { fontSize: '20px', fontWeight: '900' },
   statsArea: { margin: '10px 0' },
@@ -175,6 +183,6 @@ const styles = {
   statsRow: { marginTop: '10px', display: 'flex', gap: '10px' },
   statChip: { background: '#FFF', border: '2px solid #000', padding: '2px 8px', borderRadius: '8px', fontSize: '11px', fontWeight: 'bold' },
   voteRow: { display: 'flex', gap: '10px' },
-  voteBtn: { flex: 1, padding: '12px', borderRadius: '15px', fontWeight: '900', fontSize: '14px', cursor: 'pointer', border: '3px solid #000' },
+  voteBtn: { flex: 1, padding: '12px', borderRadius: '15px', fontWeight: '900', fontSize: '14px', cursor: 'pointer', border: '3px solid #000', transition: 'none' },
   loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: '900' }
 };
