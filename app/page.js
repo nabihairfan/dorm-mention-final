@@ -43,25 +43,23 @@ export default function ConfessionsBoard() {
   }, [router]);
 
   const handleVote = async (captionId, voteValue) => {
-    if (!user) return;
+    if (!user) return alert("Please sign in first!");
 
-    // UPSERT: This handles the "no double voting" and "changing minds" logic
+    console.log("Attempting vote:", { captionId, userId: user.id, voteValue });
+
     const { error } = await supabase
       .from('caption_votes')
-      .upsert(
-        { 
-          caption_id: captionId, 
-          user_id: user.id, 
-          vote: voteValue 
-        }, 
-        { onConflict: 'caption_id, user_id' }
-      );
+      .upsert({ 
+        caption_id: captionId, 
+        user_id: user.id, 
+        vote: voteValue 
+      });
 
     if (error) {
-      console.error("Mutation failed:", error.message);
-      alert("Vote couldn't be saved. Check console.");
+      // THIS WILL PRINT THE ACTUAL REASON IN YOUR CONSOLE (F12)
+      console.error("FULL DATABASE ERROR:", error);
+      alert(`Error: ${error.message}. Check the F12 console for the code.`);
     } else {
-      // Update local state so the UI changes immediately
       setCaptions(prev => prev.map(c => 
         c.id === captionId ? { ...c, userVote: voteValue } : c
       ));
