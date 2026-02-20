@@ -9,7 +9,6 @@ export default function ConfessionsBoard() {
   const [captions, setCaptions] = useState([]);
   const router = useRouter();
 
-  // Helper to pick a random soft color for each card
   const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
 
   useEffect(() => {
@@ -18,27 +17,58 @@ export default function ConfessionsBoard() {
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      const { data } = await supabase.from('captions').select('id, content').limit(20);
-      if (data) setCaptions(data);
+      // Fetch captions
+      const { data: captionsData } = await supabase.from('captions').select('id, content').limit(30);
+      
+      if (captionsData) {
+        // We also fetch the user's existing votes so the buttons stay highlighted on refresh
+        const { data: existingVotes } = await supabase
+          .from('caption_votes')
+          .select('caption_id, vote')
+          .eq('user_id', session.user.id);
+
+        const formattedCaptions = captionsData.map(cap => {
+          const pastVote = existingVotes?.find(v => v.caption_id === cap.id);
+          return {
+            ...cap,
+            userVote: pastVote ? pastVote.vote : null
+          };
+        });
+
+        setCaptions(formattedCaptions);
+      }
       setLoading(false);
     };
     fetchSessionAndData();
   }, [router]);
 
   const handleVote = async (captionId, voteValue) => {
-    const { error } = await supabase.from('caption_votes').insert([
-      { caption_id: captionId, vote: voteValue, user_id: user.id }
-    ]);
+    if (!user) return;
+
+    // UPSERT: This handles the "no double voting" and "changing minds" logic
+    const { error } = await supabase
+      .from('caption_votes')
+      .upsert(
+        { 
+          caption_id: captionId, 
+          user_id: user.id, 
+          vote: voteValue 
+        }, 
+        { onConflict: 'caption_id, user_id' }
+      );
 
     if (error) {
-      alert("Oops! Couldn't save that vote.");
+      console.error("Mutation failed:", error.message);
+      alert("Vote couldn't be saved. Check console.");
     } else {
-      // Visual feedback: remove the card or show a toast
-      setCaptions(prev => prev.filter(c => c.id !== captionId));
+      // Update local state so the UI changes immediately
+      setCaptions(prev => prev.map(c => 
+        c.id === captionId ? { ...c, userVote: voteValue } : c
+      ));
     }
   };
 
-  if (loading) return <div style={styles.loader}>✨ Polishing the board...</div>;
+  if (loading) return <div style={styles.loader}>✨ Organizing the feed...</div>;
 
   return (
     <div style={styles.page}>
@@ -51,8 +81,8 @@ export default function ConfessionsBoard() {
       </nav>
 
       <header style={styles.header}>
-        <h2 style={styles.title}>Campus Confessions</h2>
-        <p style={styles.subtitle}>Upvote the vibes, downvote the lies. Click a card to vote!</p>
+        <h2 style={styles.title}>Campus Feed</h2>
+        <p style={styles.subtitle}>Rate the latest campus vibes. Your votes are saved to the database.</p>
       </header>
 
       <div style={styles.masonryGrid}>
@@ -62,9 +92,31 @@ export default function ConfessionsBoard() {
             style={{...styles.card, backgroundColor: colors[i % colors.length]}}
           >
             <p style={styles.cardText}>“{cap.content}”</p>
+            
             <div style={styles.actionRow}>
-              <button onClick={() => handleVote(cap.id, 1)} style={styles.voteBtn}>🔥 Fire</button>
-              <button onClick={() => handleVote(cap.id, -1)} style={styles.voteBtn}>🗑️ Trash</button>
+              <button 
+                onClick={() => handleVote(cap.id, 1)} 
+                style={{
+                  ...styles.voteBtn, 
+                  backgroundColor: cap.userVote === 1 ? '#4ade80' : 'rgba(255,255,255,0.6)',
+                  color: cap.userVote === 1 ? 'white' : '#1e293b',
+                  boxShadow: cap.userVote === 1 ? '0 4px 10px rgba(74, 222, 128, 0.4)' : 'none'
+                }}
+              >
+                🔥 Fire
+              </button>
+              
+              <button 
+                onClick={() => handleVote(cap.id, -1)} 
+                style={{
+                  ...styles.voteBtn, 
+                  backgroundColor: cap.userVote === -1 ? '#f87171' : 'rgba(255,255,255,0.6)',
+                  color: cap.userVote === -1 ? 'white' : '#1e293b',
+                  boxShadow: cap.userVote === -1 ? '0 4px 10px rgba(248, 113, 113, 0.4)' : 'none'
+                }}
+              >
+                🗑️ Trash
+              </button>
             </div>
           </div>
         ))}
@@ -74,19 +126,19 @@ export default function ConfessionsBoard() {
 }
 
 const styles = {
-  page: { minHeight: '100vh', background: '#ffffff', padding: '0 20px 50px 20px', fontFamily: '"Segoe UI", Roboto, sans-serif' },
-  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 0', borderBottom: '1px solid #eee' },
-  logo: { fontSize: '24px', fontWeight: '900', color: '#6366f1' },
+  page: { minHeight: '100vh', background: '#ffffff', padding: '0 20px 50px 20px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
+  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 0', borderBottom: '1px solid #f1f5f9' },
+  logo: { fontSize: '24px', fontWeight: '900', color: '#6366f1', letterSpacing: '-1px' },
   userSection: { display: 'flex', alignItems: 'center', gap: '15px' },
-  email: { fontSize: '14px', color: '#666', fontWeight: '500' },
-  logout: { padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd', background: 'none', cursor: 'pointer' },
+  email: { fontSize: '14px', color: '#64748b', fontWeight: '500' },
+  logout: { padding: '8px 16px', borderRadius: '12px', border: '1px solid #e2e8f0', background: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: '600' },
   header: { textAlign: 'center', margin: '60px 0' },
-  title: { fontSize: '48px', fontWeight: '900', margin: '0 0 10px 0', letterSpacing: '-1px' },
-  subtitle: { color: '#94a3b8', fontSize: '18px' },
-  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' },
-  card: { padding: '30px', borderRadius: '25px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '180px', transition: 'transform 0.3s ease', cursor: 'default', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.05)' },
-  cardText: { fontSize: '20px', fontWeight: '700', color: '#1e293b', lineHeight: '1.4', margin: '0 0 20px 0' },
-  actionRow: { display: 'flex', gap: '10px' },
-  voteBtn: { flex: 1, padding: '10px', borderRadius: '12px', border: 'none', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px', transition: '0.2s' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', fontWeight: 'bold' }
+  title: { fontSize: '56px', fontWeight: '900', margin: '0 0 10px 0', letterSpacing: '-2px', color: '#0f172a' },
+  subtitle: { color: '#64748b', fontSize: '19px', maxWidth: '600px', margin: '0 auto' },
+  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' },
+  card: { padding: '35px', borderRadius: '30px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '200px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.05)', border: '1px solid rgba(0,0,0,0.03)' },
+  cardText: { fontSize: '22px', fontWeight: '800', color: '#1e293b', lineHeight: '1.3', margin: '0 0 25px 0' },
+  actionRow: { display: 'flex', gap: '12px' },
+  voteBtn: { flex: 1, padding: '12px', borderRadius: '15px', border: 'none', fontWeight: '800', cursor: 'pointer', fontSize: '14px', transition: 'all 0.2s ease' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: '600', color: '#6366f1' }
 };
