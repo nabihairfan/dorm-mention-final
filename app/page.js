@@ -3,67 +3,90 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { useRouter } from 'next/navigation';
 
-export default function Dashboard() {
+export default function ConfessionsBoard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [results, setResults] = useState([]);
+  const [captions, setCaptions] = useState([]);
   const router = useRouter();
 
+  // Helper to pick a random soft color for each card
+  const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
+
   useEffect(() => {
-    const getData = async () => {
+    const fetchSessionAndData = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      const { data: captions } = await supabase.from('captions').select('content');
-      const { data: dorms } = await supabase.from('dorms').select('short_name');
-
-      if (captions && dorms) {
-        const counts = dorms.map(d => ({
-          name: d.short_name,
-          count: captions.filter(c => c.content?.toLowerCase().includes(d.short_name.toLowerCase())).length
-        })).sort((a,b) => b.count - a.count);
-        setResults(counts);
-      }
+      const { data } = await supabase.from('captions').select('id, content').limit(20);
+      if (data) setCaptions(data);
       setLoading(false);
     };
-    getData();
+    fetchSessionAndData();
   }, [router]);
 
-  if (loading) return null;
+  const handleVote = async (captionId, voteValue) => {
+    const { error } = await supabase.from('caption_votes').insert([
+      { caption_id: captionId, vote: voteValue, user_id: user.id }
+    ]);
+
+    if (error) {
+      alert("Oops! Couldn't save that vote.");
+    } else {
+      // Visual feedback: remove the card or show a toast
+      setCaptions(prev => prev.filter(c => c.id !== captionId));
+    }
+  };
+
+  if (loading) return <div style={styles.loader}>✨ Polishing the board...</div>;
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: 'sans-serif' }}>
-      {/* Fun Header */}
-      <nav style={{ background: 'white', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 10px rgba(0,0,0,0.05)' }}>
-        <h1 style={{ margin: 0, background: 'linear-gradient(to right, #667eea, #764ba2)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontWeight: '900' }}>DormPulse.</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          <span style={{ fontWeight: '600', color: '#475569' }}>👋 {user.email.split('@')[0]}</span>
-          <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={{ background: '#fee2e2', color: '#ef4444', border: 'none', padding: '10px 20px', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Logout</button>
+    <div style={styles.page}>
+      <nav style={styles.nav}>
+        <h1 style={styles.logo}>DormPulse ✨</h1>
+        <div style={styles.userSection}>
+          <span style={styles.email}>{user.email}</span>
+          <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logout}>Sign Out</button>
         </div>
       </nav>
 
-      <main style={{ padding: '40px' }}>
-        <header style={{ marginBottom: '40px' }}>
-          <h2 style={{ fontSize: '32px', color: '#1e293b' }}>Live Dorm Mentions</h2>
-          <p style={{ color: '#64748b' }}>Real-time data from your Supabase captions table.</p>
-        </header>
+      <header style={styles.header}>
+        <h2 style={styles.title}>Campus Confessions</h2>
+        <p style={styles.subtitle}>Upvote the vibes, downvote the lies. Click a card to vote!</p>
+      </header>
 
-        {/* Bento Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px' }}>
-          {results.map((dorm, i) => (
-            <div key={i} style={{ background: 'white', padding: '30px', borderRadius: '24px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', border: '1px solid #e2e8f0', transition: 'transform 0.2s' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px' }}>
-                <span style={{ background: '#e0e7ff', color: '#4338ca', padding: '6px 12px', borderRadius: '10px', fontSize: '12px', fontWeight: '800' }}>DORM</span>
-                <span style={{ fontSize: '24px' }}>🏠</span>
-              </div>
-              <h3 style={{ fontSize: '22px', margin: '0 0 5px 0', color: '#1e293b' }}>{dorm.name}</h3>
-              <p style={{ margin: 0, fontSize: '48px', fontWeight: '800', color: '#6366f1' }}>{dorm.count}</p>
-              <p style={{ margin: 0, color: '#94a3b8', fontSize: '14px', fontWeight: '600' }}>TOTAL MENTIONS</p>
+      <div style={styles.masonryGrid}>
+        {captions.map((cap, i) => (
+          <div 
+            key={cap.id} 
+            style={{...styles.card, backgroundColor: colors[i % colors.length]}}
+          >
+            <p style={styles.cardText}>“{cap.content}”</p>
+            <div style={styles.actionRow}>
+              <button onClick={() => handleVote(cap.id, 1)} style={styles.voteBtn}>🔥 Fire</button>
+              <button onClick={() => handleVote(cap.id, -1)} style={styles.voteBtn}>🗑️ Trash</button>
             </div>
-          ))}
-        </div>
-      </main>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
+
+const styles = {
+  page: { minHeight: '100vh', background: '#ffffff', padding: '0 20px 50px 20px', fontFamily: '"Segoe UI", Roboto, sans-serif' },
+  nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 0', borderBottom: '1px solid #eee' },
+  logo: { fontSize: '24px', fontWeight: '900', color: '#6366f1' },
+  userSection: { display: 'flex', alignItems: 'center', gap: '15px' },
+  email: { fontSize: '14px', color: '#666', fontWeight: '500' },
+  logout: { padding: '8px 15px', borderRadius: '10px', border: '1px solid #ddd', background: 'none', cursor: 'pointer' },
+  header: { textAlign: 'center', margin: '60px 0' },
+  title: { fontSize: '48px', fontWeight: '900', margin: '0 0 10px 0', letterSpacing: '-1px' },
+  subtitle: { color: '#94a3b8', fontSize: '18px' },
+  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' },
+  card: { padding: '30px', borderRadius: '25px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '180px', transition: 'transform 0.3s ease', cursor: 'default', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.05)' },
+  cardText: { fontSize: '20px', fontWeight: '700', color: '#1e293b', lineHeight: '1.4', margin: '0 0 20px 0' },
+  actionRow: { display: 'flex', gap: '10px' },
+  voteBtn: { flex: 1, padding: '10px', borderRadius: '12px', border: 'none', background: 'rgba(255,255,255,0.5)', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px', transition: '0.2s' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', fontWeight: 'bold' }
+};
