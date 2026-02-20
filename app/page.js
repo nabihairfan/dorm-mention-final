@@ -9,6 +9,7 @@ export default function ConfessionsBoard() {
   const [captions, setCaptions] = useState([]);
   const [myStats, setMyStats] = useState({ fire: 0, trash: 0 });
   const [vibeEffect, setVibeEffect] = useState(null); 
+  const [showStats, setShowStats] = useState({}); // Track visibility per card
   const router = useRouter();
 
   const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
@@ -28,7 +29,12 @@ export default function ConfessionsBoard() {
           const myVoteEntry = myVotes?.find(v => v.caption_id === cap.id);
           const globalFire = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === 1).length || 0;
           const globalTrash = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === -1).length || 0;
-          return { ...cap, userVote: myVoteEntry ? myVoteEntry.vote_value : null, globalFire, globalTrash };
+          return { 
+            ...cap, 
+            userVote: myVoteEntry ? myVoteEntry.vote_value : null, 
+            globalFire, 
+            globalTrash 
+          };
         });
         setCaptions(formatted);
         setMyStats({
@@ -43,24 +49,20 @@ export default function ConfessionsBoard() {
     }
   }, [router]);
 
-  useEffect(() => {
-    fetchEverything();
-  }, [fetchEverything]);
+  useEffect(() => { fetchEverything(); }, [fetchEverything]);
 
   const handleVote = async (captionId, voteValue) => {
     if (!user) return;
     const currentCaption = captions.find(c => c.id === captionId);
     
-    // Toggle Logic
     if (currentCaption?.userVote === voteValue) {
       await supabase.from('caption_votes').delete().eq('caption_id', captionId).eq('profile_id', user.id);
       fetchEverything();
       return;
     }
 
-    // Trigger Effects
     setVibeEffect(voteValue === 1 ? 'fire' : 'trash');
-    setTimeout(() => setVibeEffect(null), 1500);
+    setTimeout(() => setVibeEffect(null), 1200);
 
     const { error } = await supabase.from('caption_votes').upsert({ 
       caption_id: captionId, 
@@ -72,8 +74,12 @@ export default function ConfessionsBoard() {
     if (!error) fetchEverything();
   };
 
+  const toggleStats = (id) => {
+    setShowStats(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
   const resetAllVotes = async () => {
-    if (window.confirm("🚨 Wipe your vibe history?")) {
+    if (typeof window !== "undefined" && window.confirm("🚨 Wipe your vibe history?")) {
       await supabase.from('caption_votes').delete().eq('profile_id', user.id);
       fetchEverything();
     }
@@ -83,9 +89,8 @@ export default function ConfessionsBoard() {
 
   return (
     <div style={styles.page}>
-      {/* 🎭 VIBE OVERLAYS */}
-      {vibeEffect === 'fire' && <div style={styles.effectOverlay}>🎉✨🎊🔥🥳</div>}
-      {vibeEffect === 'trash' && <div style={styles.effectOverlay}>☹️😭💔🌧️☹️</div>}
+      {vibeEffect === 'fire' && <div style={styles.effectOverlay}>🎉✨🎊</div>}
+      {vibeEffect === 'trash' && <div style={styles.effectOverlay}>☹️😭💔</div>}
 
       <div style={styles.controlCenter}>
         <div style={styles.scoreboard}>
@@ -102,25 +107,41 @@ export default function ConfessionsBoard() {
 
       <header style={styles.header}>
         <h2 style={styles.title}>The Social Wall</h2>
-        <p style={styles.subtitle}>Vote 🔥 or 🗑️. Click again to undo!</p>
+        <p style={styles.subtitle}>Vote privately or peek at the stats. Double-tap to undo!</p>
       </header>
 
       <div style={styles.masonryGrid}>
         {captions.map((cap, i) => (
           <div key={cap.id} style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
-            <p style={styles.cardText}>“{cap.content}”</p>
+            <div>
+              <p style={styles.cardText}>“{cap.content}”</p>
+              
+              {/* Stats Section: Separate from voting */}
+              <div style={styles.statsContainer}>
+                <button onClick={() => toggleStats(cap.id)} style={styles.statsToggle}>
+                  {showStats[cap.id] ? '🙈 Hide Stats' : '📊 Show Results'}
+                </button>
+                {showStats[cap.id] && (
+                  <div style={styles.statsRow}>
+                    <span style={styles.statChip}>🔥 {cap.globalFire}</span>
+                    <span style={styles.statChip}>🗑️ {cap.globalTrash}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div style={styles.voteContainer}>
               <button 
                 onClick={() => handleVote(cap.id, 1)} 
                 style={{...styles.voteBtn, border: cap.userVote === 1 ? '6px solid #4ade80' : '3px solid #000'}}
               >
-                🔥 {cap.globalFire}
+                🔥 Fire
               </button>
               <button 
                 onClick={() => handleVote(cap.id, -1)} 
                 style={{...styles.voteBtn, border: cap.userVote === -1 ? '6px solid #f87171' : '3px solid #000'}}
               >
-                🗑️ {cap.globalTrash}
+                🗑️ Trash
               </button>
             </div>
           </div>
@@ -131,8 +152,8 @@ export default function ConfessionsBoard() {
 }
 
 const styles = {
-  page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'system-ui, sans-serif', overflowX: 'hidden', position: 'relative' },
-  effectOverlay: { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '80px', pointerEvents: 'none', zIndex: 1000, background: 'rgba(255,255,255,0.2)' },
+  page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'system-ui, sans-serif', overflowX: 'hidden' },
+  effectOverlay: { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '100px', pointerEvents: 'none', zIndex: 1000 },
   controlCenter: { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', zIndex: 100 },
   scoreboard: { background: '#000', color: '#fff', padding: '12px 35px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 8px 0 #6366f1' },
   scoreItem: { fontSize: '24px', fontWeight: '900' },
@@ -142,11 +163,15 @@ const styles = {
   logout: { background: '#000', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' },
   header: { textAlign: 'center', margin: '40px 0' },
   title: { fontSize: 'clamp(40px, 10vw, 70px)', fontWeight: '900', margin: '0', textShadow: '4px 4px 0px #6366f1' },
-  subtitle: { fontSize: '20px', fontWeight: 'bold', color: '#666' },
+  subtitle: { fontSize: '18px', fontWeight: 'bold', color: '#666' },
   masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' },
-  card: { padding: '30px', borderRadius: '35px', border: '4px solid #000', minHeight: '210px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '10px 10px 0px #000' },
-  cardText: { fontSize: '22px', fontWeight: '900' },
+  card: { padding: '25px', borderRadius: '30px', border: '4px solid #000', minHeight: '280px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '8px 8px 0px #000' },
+  cardText: { fontSize: '20px', fontWeight: '900', marginBottom: '10px' },
+  statsContainer: { marginBottom: '15px' },
+  statsToggle: { background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', fontSize: '13px', fontWeight: '700', padding: 0 },
+  statsRow: { marginTop: '8px', display: 'flex', gap: '10px' },
+  statChip: { background: 'white', border: '2px solid #000', padding: '2px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' },
   voteContainer: { display: 'flex', gap: '10px' },
-  voteBtn: { flex: 1, padding: '15px', borderRadius: '20px', background: 'white', fontWeight: '900', fontSize: '18px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' },
+  voteBtn: { flex: 1, padding: '12px', borderRadius: '15px', background: 'white', fontWeight: '900', fontSize: '16px', cursor: 'pointer' },
   loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: '900' }
 };
