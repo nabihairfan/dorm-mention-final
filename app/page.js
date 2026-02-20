@@ -8,7 +8,7 @@ export default function ConfessionsBoard() {
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]);
   const [myStats, setMyStats] = useState({ fire: 0, trash: 0 });
-  const [vibeEffect, setVibeEffect] = useState(null); // 'fire' or 'trash'
+  const [vibeEffect, setVibeEffect] = useState(null); 
   const router = useRouter();
 
   const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
@@ -43,26 +43,24 @@ export default function ConfessionsBoard() {
     }
   }, [router]);
 
-  useEffect(() => { fetchEverything(); }, [fetchEverything]);
-
-  const triggerEffect = (type) => {
-    setVibeEffect(type);
-    setTimeout(() => setVibeEffect(null), 2000); // Effect lasts 2 seconds
-  };
+  useEffect(() => {
+    fetchEverything();
+  }, [fetchEverything]);
 
   const handleVote = async (captionId, voteValue) => {
     if (!user) return;
     const currentCaption = captions.find(c => c.id === captionId);
     
-    // Toggle off
+    // Toggle Logic
     if (currentCaption?.userVote === voteValue) {
       await supabase.from('caption_votes').delete().eq('caption_id', captionId).eq('profile_id', user.id);
       fetchEverything();
       return;
     }
 
-    // Trigger Fun Effects
-    triggerEffect(voteValue === 1 ? 'fire' : 'trash');
+    // Trigger Effects
+    setVibeEffect(voteValue === 1 ? 'fire' : 'trash');
+    setTimeout(() => setVibeEffect(null), 1500);
 
     const { error } = await supabase.from('caption_votes').upsert({ 
       caption_id: captionId, 
@@ -75,7 +73,7 @@ export default function ConfessionsBoard() {
   };
 
   const resetAllVotes = async () => {
-    if (confirm("🚨 Wipe your vibe history?")) {
+    if (window.confirm("🚨 Wipe your vibe history?")) {
       await supabase.from('caption_votes').delete().eq('profile_id', user.id);
       fetchEverything();
     }
@@ -85,16 +83,16 @@ export default function ConfessionsBoard() {
 
   return (
     <div style={styles.page}>
-      {/* 🎉 CONFETTI / SAD RAIN LAYER */}
-      {vibeEffect === 'fire' && <div className="effect-layer">🎉✨🎊🔥🥳✨🎊</div>}
-      {vibeEffect === 'trash' && <div className="effect-layer">☹️😭💔🌧️📉☹️</div>}
+      {/* 🎭 VIBE OVERLAYS */}
+      {vibeEffect === 'fire' && <div style={styles.effectOverlay}>🎉✨🎊🔥🥳</div>}
+      {vibeEffect === 'trash' && <div style={styles.effectOverlay}>☹️😭💔🌧️☹️</div>}
 
       <div style={styles.controlCenter}>
         <div style={styles.scoreboard}>
-          <div style={styles.scoreItem}>🔥 {myStats.fire} <span style={styles.subText}>GEMS</span></div>
-          <div style={styles.scoreItem}>🗑️ {myStats.trash} <span style={styles.subText}>TRASH</span></div>
+          <div style={styles.scoreItem}>🔥 {myStats.fire}</div>
+          <div style={styles.scoreItem}>🗑️ {myStats.trash}</div>
         </div>
-        <button onClick={resetAllVotes} style={styles.resetBtn}>RESET MY VIBES</button>
+        <button onClick={resetAllVotes} style={styles.resetBtn}>RESET ALL</button>
       </div>
 
       <nav style={styles.nav}>
@@ -104,56 +102,51 @@ export default function ConfessionsBoard() {
 
       <header style={styles.header}>
         <h2 style={styles.title}>The Social Wall</h2>
-        <p style={styles.subtitle}>Fire the gems, trash the rest. Double click to undo! ⚡️</p>
+        <p style={styles.subtitle}>Vote 🔥 or 🗑️. Click again to undo!</p>
       </header>
 
       <div style={styles.masonryGrid}>
         {captions.map((cap, i) => (
-          <div key={cap.id} className="fun-card" style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
+          <div key={cap.id} style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
             <p style={styles.cardText}>“{cap.content}”</p>
             <div style={styles.voteContainer}>
-              <button onClick={() => handleVote(cap.id, 1)} style={{...styles.voteBtn, border: cap.userVote === 1 ? '5px solid #4ade80' : '3px solid #000'}}>🔥 {cap.globalFire}</button>
-              <button onClick={() => handleVote(cap.id, -1)} style={{...styles.voteBtn, border: cap.userVote === -1 ? '5px solid #f87171' : '3px solid #000'}}>🗑️ {cap.globalTrash}</button>
+              <button 
+                onClick={() => handleVote(cap.id, 1)} 
+                style={{...styles.voteBtn, border: cap.userVote === 1 ? '6px solid #4ade80' : '3px solid #000'}}
+              >
+                🔥 {cap.globalFire}
+              </button>
+              <button 
+                onClick={() => handleVote(cap.id, -1)} 
+                style={{...styles.voteBtn, border: cap.userVote === -1 ? '6px solid #f87171' : '3px solid #000'}}
+              >
+                🗑️ {cap.globalTrash}
+              </button>
             </div>
           </div>
         ))}
       </div>
-
-      <style jsx global>{`
-        @keyframes rain {
-          0% { transform: translateY(-100vh); opacity: 1; }
-          100% { transform: translateY(100vh); opacity: 0; }
-        }
-        .effect-layer {
-          position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-          display: flex; justify-content: space-around; font-size: 50px;
-          pointer-events: none; z-index: 9999; animation: rain 2s linear;
-        }
-        .fun-card { transition: transform 0.2s ease; cursor: pointer; }
-        .fun-card:hover { transform: translateY(-8px); box-shadow: 12px 12px 0px #000 !important; }
-        .fun-card:active { transform: scale(0.9); }
-      `}</style>
     </div>
   );
 }
 
 const styles = {
-  page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'sans-serif', overflowX: 'hidden' },
+  page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'system-ui, sans-serif', overflowX: 'hidden', position: 'relative' },
+  effectOverlay: { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '80px', pointerEvents: 'none', zIndex: 1000, background: 'rgba(255,255,255,0.2)' },
   controlCenter: { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', zIndex: 100 },
-  scoreboard: { background: '#000', color: '#fff', padding: '12px 35px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 8px 0 #6366f1', border: '2px solid white' },
-  scoreItem: { fontSize: '22px', fontWeight: '900', textAlign: 'center' },
-  subText: { fontSize: '10px', display: 'block', opacity: 0.7 },
-  resetBtn: { background: '#ff4757', color: 'white', border: '2px solid #000', padding: '5px 12px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '10px' },
+  scoreboard: { background: '#000', color: '#fff', padding: '12px 35px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 8px 0 #6366f1' },
+  scoreItem: { fontSize: '24px', fontWeight: '900' },
+  resetBtn: { background: '#ff4757', color: 'white', border: '2px solid #000', padding: '5px 12px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' },
   nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  logo: { fontSize: '32px', fontWeight: '900', color: '#000', letterSpacing: '-2px' },
+  logo: { fontSize: '32px', fontWeight: '900', color: '#000' },
   logout: { background: '#000', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' },
   header: { textAlign: 'center', margin: '40px 0' },
-  title: { fontSize: 'clamp(45px, 10vw, 80px)', fontWeight: '900', margin: '0', letterSpacing: '-4px', textShadow: '4px 4px 0px #6366f1' },
+  title: { fontSize: 'clamp(40px, 10vw, 70px)', fontWeight: '900', margin: '0', textShadow: '4px 4px 0px #6366f1' },
   subtitle: { fontSize: '20px', fontWeight: 'bold', color: '#666' },
   masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' },
   card: { padding: '30px', borderRadius: '35px', border: '4px solid #000', minHeight: '210px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '10px 10px 0px #000' },
-  cardText: { fontSize: '22px', fontWeight: '900', color: '#000' },
-  voteContainer: { display: 'flex', gap: '10px', marginTop: '15px' },
-  voteBtn: { flex: 1, padding: '15px', borderRadius: '20px', background: 'white', fontWeight: '900', fontSize: '18px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', transition: '0.1s' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', fontWeight: '900' }
+  cardText: { fontSize: '22px', fontWeight: '900' },
+  voteContainer: { display: 'flex', gap: '10px' },
+  voteBtn: { flex: 1, padding: '15px', borderRadius: '20px', background: 'white', fontWeight: '900', fontSize: '18px', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: '900' }
 };
