@@ -9,7 +9,7 @@ export default function ConfessionsBoard() {
   const [captions, setCaptions] = useState([]);
   const [myStats, setMyStats] = useState({ fire: 0, trash: 0 });
   const [vibeEffect, setVibeEffect] = useState(null); 
-  const [showStats, setShowStats] = useState({}); // Track visibility per card
+  const [showStats, setShowStats] = useState({}); 
   const router = useRouter();
 
   const colors = ['#FFEDD5', '#DBEAFE', '#D1FAE5', '#FCE7F3', '#FEF3C7', '#EDE9FE'];
@@ -55,15 +55,23 @@ export default function ConfessionsBoard() {
     if (!user) return;
     const currentCaption = captions.find(c => c.id === captionId);
     
+    // THE UNDO LOGIC: If clicking the same button, delete from DB
     if (currentCaption?.userVote === voteValue) {
-      await supabase.from('caption_votes').delete().eq('caption_id', captionId).eq('profile_id', user.id);
-      fetchEverything();
+      const { error } = await supabase
+        .from('caption_votes')
+        .delete()
+        .eq('caption_id', captionId)
+        .eq('profile_id', user.id);
+      
+      if (!error) fetchEverything();
       return;
     }
 
+    // Trigger Visual Effects
     setVibeEffect(voteValue === 1 ? 'fire' : 'trash');
     setTimeout(() => setVibeEffect(null), 1200);
 
+    // THE VOTE LOGIC: Save to DB
     const { error } = await supabase.from('caption_votes').upsert({ 
       caption_id: captionId, 
       profile_id: user.id, 
@@ -79,7 +87,7 @@ export default function ConfessionsBoard() {
   };
 
   const resetAllVotes = async () => {
-    if (typeof window !== "undefined" && window.confirm("🚨 Wipe your vibe history?")) {
+    if (typeof window !== "undefined" && window.confirm("🚨 Delete ALL your votes?")) {
       await supabase.from('caption_votes').delete().eq('profile_id', user.id);
       fetchEverything();
     }
@@ -89,15 +97,16 @@ export default function ConfessionsBoard() {
 
   return (
     <div style={styles.page}>
+      {/* Visual Overlays */}
       {vibeEffect === 'fire' && <div style={styles.effectOverlay}>🎉✨🎊</div>}
       {vibeEffect === 'trash' && <div style={styles.effectOverlay}>☹️😭💔</div>}
 
       <div style={styles.controlCenter}>
         <div style={styles.scoreboard}>
-          <div style={styles.scoreItem}>🔥 {myStats.fire}</div>
-          <div style={styles.scoreItem}>🗑️ {myStats.trash}</div>
+          <div style={styles.scoreItem}>🔥 {myStats.fire} <span style={styles.miniLabel}>GEMS</span></div>
+          <div style={styles.scoreItem}>🗑️ {myStats.trash} <span style={styles.miniLabel}>TRASH</span></div>
         </div>
-        <button onClick={resetAllVotes} style={styles.resetBtn}>RESET ALL</button>
+        <button onClick={resetAllVotes} style={styles.resetBtn}>RESET VIBES</button>
       </div>
 
       <nav style={styles.nav}>
@@ -107,41 +116,50 @@ export default function ConfessionsBoard() {
 
       <header style={styles.header}>
         <h2 style={styles.title}>The Social Wall</h2>
-        <p style={styles.subtitle}>Vote privately or peek at the stats. Double-tap to undo!</p>
+        <p style={styles.subtitle}>Vote privately. Click a colored button again to remove your vote.</p>
       </header>
 
-      <div style={styles.masonryGrid}>
+      <div style={styles.grid}>
         {captions.map((cap, i) => (
           <div key={cap.id} style={{...styles.card, backgroundColor: colors[i % colors.length]}}>
             <div>
               <p style={styles.cardText}>“{cap.content}”</p>
               
-              {/* Stats Section: Separate from voting */}
-              <div style={styles.statsContainer}>
+              <div style={styles.statsArea}>
                 <button onClick={() => toggleStats(cap.id)} style={styles.statsToggle}>
-                  {showStats[cap.id] ? '🙈 Hide Stats' : '📊 Show Results'}
+                  {showStats[cap.id] ? '🙈 Hide Stats' : '📊 Show Community Results'}
                 </button>
                 {showStats[cap.id] && (
                   <div style={styles.statsRow}>
-                    <span style={styles.statChip}>🔥 {cap.globalFire}</span>
-                    <span style={styles.statChip}>🗑️ {cap.globalTrash}</span>
+                    <span style={styles.statChip}>Total 🔥: {cap.globalFire}</span>
+                    <span style={styles.statChip}>Total 🗑️: {cap.globalTrash}</span>
                   </div>
                 )}
               </div>
             </div>
 
-            <div style={styles.voteContainer}>
+            <div style={styles.voteRow}>
               <button 
                 onClick={() => handleVote(cap.id, 1)} 
-                style={{...styles.voteBtn, border: cap.userVote === 1 ? '6px solid #4ade80' : '3px solid #000'}}
+                style={{
+                  ...styles.voteBtn, 
+                  backgroundColor: cap.userVote === 1 ? '#4ade80' : '#FFF',
+                  color: cap.userVote === 1 ? '#FFF' : '#000',
+                  border: '3px solid #000'
+                }}
               >
-                🔥 Fire
+                🔥 FIRE
               </button>
               <button 
                 onClick={() => handleVote(cap.id, -1)} 
-                style={{...styles.voteBtn, border: cap.userVote === -1 ? '6px solid #f87171' : '3px solid #000'}}
+                style={{
+                  ...styles.voteBtn, 
+                  backgroundColor: cap.userVote === -1 ? '#f87171' : '#FFF',
+                  color: cap.userVote === -1 ? '#FFF' : '#000',
+                  border: '3px solid #000'
+                }}
               >
-                🗑️ Trash
+                🗑️ TRASH
               </button>
             </div>
           </div>
@@ -152,26 +170,27 @@ export default function ConfessionsBoard() {
 }
 
 const styles = {
-  page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'system-ui, sans-serif', overflowX: 'hidden' },
+  page: { minHeight: '100vh', background: '#FFF', padding: '20px', fontFamily: 'sans-serif', position: 'relative' },
   effectOverlay: { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '100px', pointerEvents: 'none', zIndex: 1000 },
   controlCenter: { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center', zIndex: 100 },
-  scoreboard: { background: '#000', color: '#fff', padding: '12px 35px', borderRadius: '50px', display: 'flex', gap: '30px', boxShadow: '0 8px 0 #6366f1' },
-  scoreItem: { fontSize: '24px', fontWeight: '900' },
-  resetBtn: { background: '#ff4757', color: 'white', border: '2px solid #000', padding: '5px 12px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' },
+  scoreboard: { background: '#000', color: '#fff', padding: '12px 35px', borderRadius: '50px', display: 'flex', gap: '30px', border: '3px solid #6366f1' },
+  scoreItem: { fontSize: '24px', fontWeight: '900', textAlign: 'center' },
+  miniLabel: { fontSize: '10px', display: 'block', opacity: 0.6 },
+  resetBtn: { background: '#ff4757', color: 'white', border: '2px solid #000', padding: '5px 12px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '11px' },
   nav: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   logo: { fontSize: '32px', fontWeight: '900', color: '#000' },
-  logout: { background: '#000', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' },
+  logout: { background: '#000', color: '#fff', padding: '10px 20px', borderRadius: '12px', border: 'none', cursor: 'pointer', fontWeight: 'bold' },
   header: { textAlign: 'center', margin: '40px 0' },
-  title: { fontSize: 'clamp(40px, 10vw, 70px)', fontWeight: '900', margin: '0', textShadow: '4px 4px 0px #6366f1' },
-  subtitle: { fontSize: '18px', fontWeight: 'bold', color: '#666' },
-  masonryGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '25px', maxWidth: '1200px', margin: '0 auto' },
-  card: { padding: '25px', borderRadius: '30px', border: '4px solid #000', minHeight: '280px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '8px 8px 0px #000' },
-  cardText: { fontSize: '20px', fontWeight: '900', marginBottom: '10px' },
-  statsContainer: { marginBottom: '15px' },
-  statsToggle: { background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', fontSize: '13px', fontWeight: '700', padding: 0 },
-  statsRow: { marginTop: '8px', display: 'flex', gap: '10px' },
-  statChip: { background: 'white', border: '2px solid #000', padding: '2px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' },
-  voteContainer: { display: 'flex', gap: '10px' },
-  voteBtn: { flex: 1, padding: '12px', borderRadius: '15px', background: 'white', fontWeight: '900', fontSize: '16px', cursor: 'pointer' },
+  title: { fontSize: 'clamp(40px, 8vw, 70px)', fontWeight: '900', textShadow: '4px 4px 0px #6366f1' },
+  subtitle: { fontSize: '18px', fontWeight: 'bold', color: '#555' },
+  grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '30px', maxWidth: '1200px', margin: '0 auto' },
+  card: { padding: '30px', borderRadius: '30px', border: '4px solid #000', minHeight: '300px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxShadow: '10px 10px 0px #000' },
+  cardText: { fontSize: '22px', fontWeight: '900', lineHeight: '1.2' },
+  statsArea: { margin: '15px 0' },
+  statsToggle: { background: 'none', border: 'none', padding: 0, textDecoration: 'underline', fontWeight: '700', cursor: 'pointer', fontSize: '13px' },
+  statsRow: { marginTop: '10px', display: 'flex', gap: '10px' },
+  statChip: { background: '#FFF', border: '2px solid #000', padding: '3px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' },
+  voteRow: { display: 'flex', gap: '10px' },
+  voteBtn: { flex: 1, padding: '15px', borderRadius: '18px', fontWeight: '900', fontSize: '16px', cursor: 'pointer' },
   loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: '900' }
 };
