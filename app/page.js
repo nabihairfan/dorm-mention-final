@@ -159,7 +159,7 @@ export default function ConfessionsBoard() {
             <div style={styles.feed}>
               {captions.filter(c => c.content.toLowerCase().includes(searchQuery)).map(cap => (
                 <div key={cap.id} style={styles.searchResult}>
-                  <img src={cap.image_url} style={styles.searchThumb} />
+                  <img src={cap.image_url} style={styles.searchThumb} alt="thumbnail" />
                   <p>{cap.content}</p>
                 </div>
               ))}
@@ -214,6 +214,7 @@ const styles = {
   headerNav: { position: 'fixed', top: 0, width: '100%', background: '#fff', padding: '15px', textAlign: 'center', borderBottom: '2px solid #ddd', zIndex: 100 },
   logo: { fontFamily: "'Luckiest Guy', cursive", fontSize: '24px', margin: 0 },
   content: { paddingTop: '70px', paddingBottom: '90px', maxWidth: '600px', margin: '0 auto' },
+  feed: { padding: '0 10px' },
   memeCard: { background: '#fff', marginBottom: '20px', borderRadius: '15px', overflow: 'hidden', border: '2px solid #000', boxShadow: '5px 5px 0px #000' },
   memeImg: { width: '100%', height: 'auto', display: 'block' },
   cardInfo: { padding: '15px' },
@@ -229,11 +230,11 @@ const styles = {
   searchThumb: { width: '50px', height: '50px', borderRadius: '5px', objectFit: 'cover' },
   uploadBox: { background: '#fff', padding: '30px', borderRadius: '20px', border: '3px solid #000', textAlign: 'center' },
   fileInput: { margin: '20px 0', display: 'block', width: '100%' },
-  actionBtn: { background: '#6366f1', color: '#fff', padding: '15px', width: '100%', borderRadius: '10px', border: '2px solid #000', fontFamily: "'Luckiest Guy', cursive' },
+  actionBtn: { background: '#6366f1', color: '#fff', padding: '15px', width: '100%', borderRadius: '10px', border: '2px solid #000', fontFamily: "'Luckiest Guy', cursive" },
   accountCard: { background: '#fff', padding: '30px', borderRadius: '20px', border: '3px solid #000', textAlign: 'center' },
   emailText: { marginBottom: '20px' },
   statsRow: { display: 'flex', gap: '10px', marginBottom: '20px' },
   statBox: { flex: 1, padding: '10px', background: '#000', color: '#fff', borderRadius: '10px', fontWeight: 'bold' },
   logoutBtn: { background: '#ff4757', color: '#fff', padding: '10px 20px', borderRadius: '10px', border: '2px solid #000', fontWeight: 'bold' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive', fontSize: '24px' }
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive", fontSize: '24px' }
 };
