@@ -7,11 +7,10 @@ export default function ConfessionsBoard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]);
-  const [activeTab, setActiveTab] = useState('home'); // 'home', 'search', 'upload', 'account'
+  const [activeTab, setActiveTab] = useState('home');
   const [searchQuery, setSearchQuery] = useState('');
   const [myStats, setMyStats] = useState({ fire: 0, trash: 0 });
   
-  // Upload States
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState(null);
 
@@ -23,10 +22,20 @@ export default function ConfessionsBoard() {
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      const { data: captionsData } = await supabase
+      // --- JOINING CAPTIONS WITH IMAGES ---
+      // We grab everything from captions, then look into the linked 'images' 
+      // table to grab the 'url' column you mentioned.
+      const { data: captionsData, error: capError } = await supabase
         .from('captions')
-        .select('id, content, image_url')
+        .select(`
+          id, 
+          content, 
+          image_id,
+          images ( url )
+        `) 
         .order('id', { ascending: false });
+
+      if (capError) throw capError;
 
       const { data: allVotes } = await supabase.from('caption_votes').select('caption_id, vote_value');
       const { data: myVotes } = await supabase.from('caption_votes').select('caption_id, vote_value').eq('profile_id', session.user.id);
@@ -36,7 +45,15 @@ export default function ConfessionsBoard() {
           const myVoteEntry = myVotes?.find(v => v.caption_id === cap.id);
           const globalFire = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === 1).length || 0;
           const globalTrash = allVotes?.filter(v => v.caption_id === cap.id && v.vote_value === -1).length || 0;
-          return { ...cap, userVote: myVoteEntry ? myVoteEntry.vote_value : null, globalFire, globalTrash };
+          
+          return { 
+            ...cap, 
+            userVote: myVoteEntry ? myVoteEntry.vote_value : null, 
+            globalFire, 
+            globalTrash,
+            // Using the 'url' column from your images table
+            display_url: cap.images?.url || 'https://via.placeholder.com/400x300?text=Image+Not+Found'
+          };
         });
         setCaptions(formatted);
         setMyStats({
@@ -44,7 +61,11 @@ export default function ConfessionsBoard() {
           trash: myVotes?.filter(v => v.vote_value === -1).length || 0
         });
       }
-    } catch (err) { console.error(err); } finally { setLoading(false); }
+    } catch (err) { 
+      console.error("Fetch Error:", err); 
+    } finally { 
+      setLoading(false); 
+    }
   }, [router]);
 
   useEffect(() => { fetchEverything(); }, [fetchEverything]);
@@ -54,7 +75,7 @@ export default function ConfessionsBoard() {
     const currentCard = captions.find(c => c.id === captionId);
     const isRemoving = currentCard?.userVote === voteValue;
 
-    // Optimistic UI Update
+    // UI Update immediately
     setCaptions(prev => prev.map(c => {
       if (c.id === captionId) {
         let newFire = c.globalFire;
@@ -81,7 +102,7 @@ export default function ConfessionsBoard() {
   };
 
   const handleImageUpload = async () => {
-    if (!file || !user) return alert("Pick a file!");
+    if (!file || !user) return alert("Select a meme first!");
     setUploading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -106,7 +127,7 @@ export default function ConfessionsBoard() {
         body: JSON.stringify({ imageId: imageId })
       });
 
-      alert("Uploaded! Check the feed.");
+      alert("Meme Processed! Refreshing feed...");
       setFile(null);
       setActiveTab('home');
       fetchEverything();
@@ -119,19 +140,18 @@ export default function ConfessionsBoard() {
     <div style={styles.page}>
       <style dangerouslySetInnerHTML={{ __html: `@import url('https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Poppins:wght@400;700;900&display=swap');` }} />
 
-      {/* HEADER */}
       <nav style={styles.headerNav}>
         <h1 style={styles.logo}>DormPulse.</h1>
       </nav>
 
       <main style={styles.content}>
-        
-        {/* TAB 1: HOME FEED */}
         {activeTab === 'home' && (
           <div style={styles.feed}>
-            {captions.map((cap, i) => (
+            {captions.map((cap) => (
               <div key={cap.id} style={styles.memeCard}>
-                <img src={cap.image_url} alt="meme" style={styles.memeImg} />
+                <div style={styles.imgContainer}>
+                  <img src={cap.display_url} alt="meme" style={styles.memeImg} />
+                </div>
                 <div style={styles.cardInfo}>
                   <p style={styles.captionText}>“{cap.content}”</p>
                   <div style={styles.voteBar}>
@@ -148,39 +168,32 @@ export default function ConfessionsBoard() {
           </div>
         )}
 
-        {/* TAB 2: SEARCH */}
         {activeTab === 'search' && (
           <div style={styles.tabContent}>
-            <input 
-              style={styles.searchBar} 
-              placeholder="Search captions..." 
-              onChange={(e) => setSearchQuery(e.target.value.toLowerCase())}
-            />
+            <input style={styles.searchBar} placeholder="Search captions..." onChange={(e) => setSearchQuery(e.target.value.toLowerCase())} />
             <div style={styles.feed}>
               {captions.filter(c => c.content.toLowerCase().includes(searchQuery)).map(cap => (
                 <div key={cap.id} style={styles.searchResult}>
-                  <img src={cap.image_url} style={styles.searchThumb} alt="thumbnail" />
-                  <p>{cap.content}</p>
+                  <img src={cap.display_url} style={styles.searchThumb} alt="thumb" />
+                  <p style={{fontWeight: 'bold'}}>{cap.content}</p>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* TAB 3: UPLOAD */}
         {activeTab === 'upload' && (
           <div style={styles.tabContent}>
             <div style={styles.uploadBox}>
               <h2 style={styles.tabTitle}>Post a Meme</h2>
               <input type="file" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
               <button onClick={handleImageUpload} disabled={uploading} style={styles.actionBtn}>
-                {uploading ? 'GENERATING...' : 'UPLOAD & CAPTION'}
+                {uploading ? 'PROCESSING...' : 'UPLOAD & CAPTION'}
               </button>
             </div>
           </div>
         )}
 
-        {/* TAB 4: ACCOUNT */}
         {activeTab === 'account' && (
           <div style={styles.tabContent}>
             <div style={styles.accountCard}>
@@ -190,15 +203,12 @@ export default function ConfessionsBoard() {
                 <div style={styles.statBox}>🔥 Sent: {myStats.fire}</div>
                 <div style={styles.statBox}>🗑️ Sent: {myStats.trash}</div>
               </div>
-              <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logoutBtn}>
-                LOGOUT
-              </button>
+              <button onClick={() => supabase.auth.signOut().then(() => window.location.reload())} style={styles.logoutBtn}>LOGOUT</button>
             </div>
           </div>
         )}
       </main>
 
-      {/* BOTTOM NAVIGATION BAR */}
       <nav style={styles.bottomNav}>
         <button onClick={() => setActiveTab('home')} style={{...styles.navItem, color: activeTab === 'home' ? '#6366f1' : '#888'}}>🏠<br/>Feed</button>
         <button onClick={() => setActiveTab('search')} style={{...styles.navItem, color: activeTab === 'search' ? '#6366f1' : '#888'}}>🔍<br/>Search</button>
@@ -213,28 +223,29 @@ const styles = {
   page: { minHeight: '100vh', background: '#f5f5f5', fontFamily: "'Poppins', sans-serif" },
   headerNav: { position: 'fixed', top: 0, width: '100%', background: '#fff', padding: '15px', textAlign: 'center', borderBottom: '2px solid #ddd', zIndex: 100 },
   logo: { fontFamily: "'Luckiest Guy', cursive", fontSize: '24px', margin: 0 },
-  content: { paddingTop: '70px', paddingBottom: '90px', maxWidth: '600px', margin: '0 auto' },
-  feed: { padding: '0 10px' },
-  memeCard: { background: '#fff', marginBottom: '20px', borderRadius: '15px', overflow: 'hidden', border: '2px solid #000', boxShadow: '5px 5px 0px #000' },
+  content: { paddingTop: '80px', paddingBottom: '100px', maxWidth: '500px', margin: '0 auto' },
+  feed: { display: 'flex', flexDirection: 'column', gap: '20px', padding: '0 10px' },
+  memeCard: { background: '#fff', borderRadius: '15px', overflow: 'hidden', border: '3px solid #000', boxShadow: '6px 6px 0px #000' },
+  imgContainer: { width: '100%', borderBottom: '3px solid #000', background: '#eee', minHeight: '200px' },
   memeImg: { width: '100%', height: 'auto', display: 'block' },
   cardInfo: { padding: '15px' },
-  captionText: { fontSize: '18px', fontWeight: '900', marginBottom: '10px' },
+  captionText: { fontSize: '20px', fontWeight: '900', marginBottom: '15px', lineHeight: '1.2' },
   voteBar: { display: 'flex', gap: '10px' },
-  voteBtn: { flex: 1, padding: '10px', borderRadius: '10px', border: '2px solid #000', fontWeight: 'bold', cursor: 'pointer' },
-  bottomNav: { position: 'fixed', bottom: 0, width: '100%', background: '#fff', display: 'flex', justifyContent: 'space-around', padding: '10px 0', borderTop: '2px solid #ddd' },
+  voteBtn: { flex: 1, padding: '12px', borderRadius: '12px', border: '2px solid #000', fontWeight: 'bold', cursor: 'pointer', fontSize: '16px' },
+  bottomNav: { position: 'fixed', bottom: 0, width: '100%', background: '#fff', display: 'flex', justifyContent: 'space-around', padding: '12px 0', borderTop: '2px solid #ddd' },
   navItem: { border: 'none', background: 'none', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center' },
   tabContent: { padding: '20px' },
-  tabTitle: { fontFamily: "'Luckiest Guy', cursive", fontSize: '32px', textAlign: 'center' },
-  searchBar: { width: '100%', padding: '15px', borderRadius: '10px', border: '2px solid #000', marginBottom: '20px' },
-  searchResult: { display: 'flex', alignItems: 'center', gap: '15px', background: '#fff', padding: '10px', borderRadius: '10px', marginBottom: '10px', border: '1px solid #ddd' },
-  searchThumb: { width: '50px', height: '50px', borderRadius: '5px', objectFit: 'cover' },
-  uploadBox: { background: '#fff', padding: '30px', borderRadius: '20px', border: '3px solid #000', textAlign: 'center' },
+  tabTitle: { fontFamily: "'Luckiest Guy', cursive", fontSize: '32px', textAlign: 'center', marginBottom: '20px' },
+  searchBar: { width: '100%', padding: '15px', borderRadius: '12px', border: '2px solid #000', marginBottom: '20px', fontSize: '16px' },
+  searchResult: { display: 'flex', alignItems: 'center', gap: '15px', background: '#fff', padding: '12px', borderRadius: '12px', marginBottom: '10px', border: '2px solid #000' },
+  searchThumb: { width: '60px', height: '60px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #000' },
+  uploadBox: { background: '#fff', padding: '30px', borderRadius: '25px', border: '3px solid #000', textAlign: 'center' },
   fileInput: { margin: '20px 0', display: 'block', width: '100%' },
-  actionBtn: { background: '#6366f1', color: '#fff', padding: '15px', width: '100%', borderRadius: '10px', border: '2px solid #000', fontFamily: "'Luckiest Guy', cursive" },
-  accountCard: { background: '#fff', padding: '30px', borderRadius: '20px', border: '3px solid #000', textAlign: 'center' },
-  emailText: { marginBottom: '20px' },
+  actionBtn: { background: '#6366f1', color: '#fff', padding: '15px', width: '100%', borderRadius: '12px', border: '2px solid #000', fontFamily: "'Luckiest Guy', cursive", fontSize: '18px', cursor: 'pointer' },
+  accountCard: { background: '#fff', padding: '30px', borderRadius: '25px', border: '3px solid #000', textAlign: 'center' },
+  emailText: { marginBottom: '20px', fontSize: '16px' },
   statsRow: { display: 'flex', gap: '10px', marginBottom: '20px' },
-  statBox: { flex: 1, padding: '10px', background: '#000', color: '#fff', borderRadius: '10px', fontWeight: 'bold' },
-  logoutBtn: { background: '#ff4757', color: '#fff', padding: '10px 20px', borderRadius: '10px', border: '2px solid #000', fontWeight: 'bold' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive", fontSize: '24px' }
+  statBox: { flex: 1, padding: '15px', background: '#000', color: '#fff', borderRadius: '12px', fontWeight: 'bold' },
+  logoutBtn: { background: '#ff4757', color: '#fff', padding: '12px 25px', borderRadius: '12px', border: '2px solid #000', fontWeight: 'bold', cursor: 'pointer' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive", fontSize: '28px' }
 };
