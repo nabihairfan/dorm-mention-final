@@ -10,42 +10,39 @@ export default function ConfessionsBoard() {
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentIndex, setCurrentIndex] = useState(0);
   
+  // Pipeline States
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState(null);
   const [newCaptions, setNewCaptions] = useState([]); 
 
   const router = useRouter();
 
+  // 1. DATA FETCHING (Persisted Wall Logic)
   const fetchData = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      // --- THE SPECIFIC JOIN ---
-      // We grab captions. Since image_id in captions points to id (PK) in images,
-      // we use the 'images' relation to get the 'url'.
+      // Join captions with images table to get the URL
       const { data, error } = await supabase
         .from('captions')
         .select(`
           id, 
           content, 
           image_id,
-          images!image_id ( 
-            url, 
-            profile_id 
-          )
+          images!image_id ( url, profile_id, is_common_use )
         `)
         .order('id', { ascending: false });
 
       if (error) throw error;
 
+      // Map data safely to handle the image object return
       const formatted = data.map(cap => {
-        // Safe check for the joined images data
-        const imgData = Array.isArray(cap.images) ? cap.images[0] : cap.images;
+        const imgObj = Array.isArray(cap.images) ? cap.images[0] : cap.images;
         return { 
           ...cap, 
-          display_url: imgData?.url || 'https://via.placeholder.com/400?text=Image+Not+Found'
+          display_url: imgObj?.url || 'https://via.placeholder.com/400?text=Private+Image'
         };
       });
 
@@ -59,8 +56,9 @@ export default function ConfessionsBoard() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // 2. THE 4-STEP PIPELINE (The core assignment requirement)
   const handlePipelineUpload = async () => {
-    if (!file || !user) return alert("Select an image!");
+    if (!file || !user) return alert("Select an image first!");
     setUploading(true);
     setNewCaptions([]);
 
@@ -68,40 +66,45 @@ export default function ConfessionsBoard() {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session.access_token;
 
-      // STEP 1: Generate URL
-      const r1 = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
+      // STEP 1: Generate Presigned URL
+      const res1 = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ contentType: file.type })
       });
-      const { presignedUrl, cdnUrl } = await r1.json();
+      const { presignedUrl, cdnUrl } = await res1.json();
 
-      // STEP 2: Upload Bytes
-      await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      // STEP 2: Upload Image Bytes directly to presignedUrl
+      await fetch(presignedUrl, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file
+      });
 
-      // STEP 3: Register Image
-      const r3 = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
+      // STEP 3: Register Image URL in the Pipeline
+      const res3 = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: cdnUrl, isCommonUse: false })
       });
-      const { imageId } = await r3.json();
+      const { imageId } = await res3.json();
 
       // STEP 4: Generate Captions
-      const r4 = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
+      const res4 = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageId: imageId })
       });
-      const generated = await r4.json();
+      const generatedData = await res4.json();
 
-      // REQUIREMENT: Show result immediately
-      setNewCaptions(generated);
+      // REQUIREMENT: resulting captions come up right there
+      setNewCaptions(generatedData);
       
-      // Sync DB data
+      // RE-FETCH: ensures the data is now persisted in your Wall
       fetchData(); 
     } catch (err) {
-      alert("Pipeline Failed.");
+      alert("Pipeline process failed.");
+      console.error(err);
     } finally {
       setUploading(false);
     }
@@ -113,56 +116,61 @@ export default function ConfessionsBoard() {
     <div style={styles.page}>
       <style dangerouslySetInnerHTML={{ __html: `@import url('https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Poppins:wght@400;900&display=swap');` }} />
 
-      <nav style={styles.headerNav}>
+      {/* HEADER: Fixed top layout fix */}
+      <nav style={styles.header}>
         <h1 style={styles.logo}>DormPulse.</h1>
       </nav>
 
       <main style={styles.content}>
-        {/* TAB: VOTE (ONE AT A TIME) */}
+        {/* TAB: VOTE (One by One) */}
         {activeTab === 'home' && (
-          <div style={styles.centered}>
+          <div style={styles.tabSection}>
             {captions[currentIndex] ? (
               <div key={captions[currentIndex].id} style={styles.card}>
-                <img src={captions[currentIndex].display_url} style={styles.img} alt="meme" />
-                <div style={styles.info}>
-                  <p style={styles.cap}>“{captions[currentIndex].content}”</p>
-                  <div style={styles.btnRow}>
-                    <button onClick={() => setCurrentIndex(c => (c + 1) % captions.length)} style={styles.trash}>🗑️ TRASH</button>
-                    <button onClick={() => setCurrentIndex(c => (c + 1) % captions.length)} style={styles.fire}>🔥 FIRE</button>
+                <img src={captions[currentIndex].display_url} style={styles.cardImg} alt="meme" />
+                <div style={styles.cardBody}>
+                  <p style={styles.cardCaption}>“{captions[currentIndex].content}”</p>
+                  <div style={styles.cardActions}>
+                    <button onClick={() => setCurrentIndex(c => (c + 1) % captions.length)} style={styles.trashBtn}>🗑️ TRASH</button>
+                    <button onClick={() => setCurrentIndex(c => (c + 1) % captions.length)} style={styles.fireBtn}>🔥 FIRE</button>
                   </div>
                 </div>
               </div>
-            ) : <p>No memes yet!</p>}
+            ) : <p style={{textAlign: 'center'}}>No memes found. Head to Post!</p>}
           </div>
         )}
 
-        {/* TAB: THE WALL (FULL PERSISTED DATA) */}
+        {/* TAB: THE WALL (Full Wall View) */}
         {activeTab === 'wall' && (
-          <div style={styles.grid}>
-            <h2 style={styles.title}>The Wall</h2>
+          <div style={styles.wallGrid}>
+            <h2 style={styles.tabHeader}>The Meme Wall</h2>
             {captions.map(c => (
               <div key={c.id} style={styles.wallItem}>
                 <img src={c.display_url} style={styles.wallImg} alt="meme" />
-                <p style={styles.wallText}>{c.content}</p>
+                <div style={styles.wallContent}>
+                  <p style={styles.wallText}>{c.content}</p>
+                </div>
               </div>
             ))}
           </div>
         )}
 
-        {/* TAB: UPLOAD (PIPELINE FLOW) */}
+        {/* TAB: UPLOAD (The Pipeline Steps) */}
         {activeTab === 'upload' && (
-          <div style={styles.uploadBox}>
-            <h2 style={styles.title}>Post Meme</h2>
-            <input type="file" onChange={(e) => setFile(e.target.files[0])} />
-            <button onClick={handlePipelineUpload} disabled={uploading} style={styles.mainBtn}>
-              {uploading ? 'PROCESSING...' : 'GENERATE'}
-            </button>
+          <div style={styles.tabSection}>
+            <div style={styles.uploadCard}>
+              <h2 style={styles.tabHeader}>New Post</h2>
+              <input type="file" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+              <button onClick={handlePipelineUpload} disabled={uploading} style={styles.actionBtn}>
+                {uploading ? 'PIPELINE PROCESSING...' : 'GENERATE CAPTIONS'}
+              </button>
+            </div>
             
             {newCaptions.length > 0 && (
-              <div style={styles.results}>
-                <h4 style={{margin: '0 0 10px'}}>Generated Captions:</h4>
-                {newCaptions.map((nc, idx) => (
-                  <p key={idx} style={{fontSize: '14px', fontWeight: 'bold'}}>✅ {nc.content}</p>
+              <div style={styles.successBox}>
+                <h3 style={{marginTop: 0}}>✨ Caption Results:</h3>
+                {newCaptions.map((nc, i) => (
+                  <p key={i} style={{fontWeight: 'bold'}}>✅ {nc.content}</p>
                 ))}
               </div>
             )}
@@ -170,37 +178,81 @@ export default function ConfessionsBoard() {
         )}
       </main>
 
-      <nav style={styles.nav}>
-        <button onClick={() => setActiveTab('home')} style={styles.ni}>🔥<br/>Vote</button>
-        <button onClick={() => setActiveTab('wall')} style={styles.ni}>🧱<br/>Wall</button>
-        <button onClick={() => setActiveTab('upload')} style={styles.ni}>➕<br/>Post</button>
+      {/* NAVIGATION: Fixed bottom */}
+      <nav style={styles.navBar}>
+        <button onClick={() => setActiveTab('home')} style={styles.navBtn}>🔥<br/>Vote</button>
+        <button onClick={() => setActiveTab('wall')} style={styles.navBtn}>🧱<br/>Wall</button>
+        <button onClick={() => setActiveTab('upload')} style={styles.navBtn}>➕<br/>Post</button>
       </nav>
     </div>
   );
 }
 
+// 3. THE STYLING TOOLKIT (Layout Fixes)
 const styles = {
-  page: { background: '#f5f5f5', minHeight: '100vh', paddingBottom: '100px', fontFamily: "'Poppins', sans-serif" },
-  headerNav: { position: 'fixed', top: 0, width: '100%', background: '#fff', padding: '15px', textAlign: 'center', borderBottom: '2px solid #ddd', zIndex: 100 },
-  logo: { fontFamily: "'Luckiest Guy', cursive", fontSize: '26px', color: '#6366f1' },
-  content: { paddingTop: '90px', maxWidth: '450px', margin: '0 auto', padding: '0 15px' },
-  centered: { width: '100%' },
-  card: { background: '#fff', borderRadius: '20px', border: '4px solid #000', overflow: 'hidden', boxShadow: '8px 8px 0 #000' },
-  img: { width: '100%', background: '#eee' },
-  info: { padding: '20px', textAlign: 'center' },
-  cap: { fontSize: '22px', fontWeight: '900' },
-  btnRow: { display: 'flex', gap: '10px', marginTop: '15px' },
-  fire: { flex: 1, background: '#4ade80', padding: '15px', borderRadius: '12px', border: '3px solid #000', fontWeight: 'bold' },
-  trash: { flex: 1, background: '#f87171', padding: '15px', borderRadius: '12px', border: '3px solid #000', fontWeight: 'bold' },
-  grid: { display: 'flex', flexDirection: 'column', gap: '20px' },
-  title: { fontFamily: "'Luckiest Guy', cursive", textAlign: 'center' },
-  wallItem: { background: '#fff', padding: '10px', borderRadius: '15px', border: '2px solid #000' },
-  wallImg: { width: '100%', borderRadius: '10px' },
-  wallText: { fontWeight: '900', marginTop: '10px' },
-  uploadBox: { background: '#fff', padding: '30px', borderRadius: '20px', border: '4px solid #000', textAlign: 'center' },
-  mainBtn: { width: '100%', marginTop: '20px', padding: '15px', background: '#6366f1', color: '#fff', border: '3px solid #000', borderRadius: '12px', fontFamily: "'Luckiest Guy', cursive" },
-  results: { marginTop: '20px', padding: '15px', background: '#e0f2fe', borderRadius: '12px', textAlign: 'left' },
-  nav: { position: 'fixed', bottom: 0, width: '100%', background: '#fff', display: 'flex', justifyContent: 'space-around', padding: '15px 0', borderTop: '2px solid #ddd' },
-  ni: { border: 'none', background: 'none', textAlign: 'center', fontWeight: 'bold' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive", fontSize: '24px' }
+  page: { 
+    background: '#f8f8f8', 
+    minHeight: '100vh', 
+    width: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    fontFamily: "'Poppins', sans-serif" 
+  },
+  header: { 
+    position: 'fixed', 
+    top: 0, left: 0, right: 0,
+    height: '70px', 
+    background: '#fff', 
+    display: 'flex', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    borderBottom: '4px solid #000', 
+    zIndex: 1000 
+  },
+  logo: { fontFamily: "'Luckiest Guy', cursive", fontSize: '28px', color: '#6366f1', margin: 0 },
+  content: { 
+    paddingTop: '100px', // Pushes content below the fixed header
+    paddingBottom: '110px', // Prevents nav overlap at bottom
+    maxWidth: '480px', 
+    width: '100%',
+    margin: '0 auto', 
+    paddingLeft: '15px', 
+    paddingRight: '15px' 
+  },
+  tabSection: { width: '100%' },
+  tabHeader: { fontFamily: "'Luckiest Guy', cursive", textAlign: 'center', marginBottom: '20px' },
+  card: { 
+    background: '#fff', 
+    borderRadius: '25px', 
+    border: '4px solid #000', 
+    overflow: 'hidden', 
+    boxShadow: '10px 10px 0 #000' 
+  },
+  cardImg: { width: '100%', height: 'auto', maxHeight: '55vh', objectFit: 'cover', background: '#ddd', display: 'block' },
+  cardBody: { padding: '20px', textAlign: 'center' },
+  cardCaption: { fontSize: '22px', fontWeight: '900', margin: '0 0 20px 0' },
+  cardActions: { display: 'flex', gap: '15px' },
+  fireBtn: { flex: 1, background: '#4ade80', padding: '16px', borderRadius: '15px', border: '3px solid #000', fontWeight: '900', cursor: 'pointer', fontFamily: "'Luckiest Guy', cursive" },
+  trashBtn: { flex: 1, background: '#f87171', padding: '16px', borderRadius: '15px', border: '3px solid #000', fontWeight: '900', cursor: 'pointer', fontFamily: "'Luckiest Guy', cursive" },
+  wallGrid: { display: 'flex', flexDirection: 'column', gap: '20px' },
+  wallItem: { background: '#fff', borderRadius: '20px', border: '3px solid #000', overflow: 'hidden' },
+  wallImg: { width: '100%', display: 'block', borderBottom: '3px solid #000' },
+  wallContent: { padding: '15px' },
+  wallText: { fontWeight: '900', fontSize: '18px' },
+  uploadCard: { background: '#fff', padding: '30px', borderRadius: '25px', border: '4px solid #000', textAlign: 'center' },
+  fileInput: { margin: '20px 0', width: '100%' },
+  actionBtn: { width: '100%', padding: '18px', background: '#6366f1', color: '#fff', border: '3px solid #000', borderRadius: '15px', fontFamily: "'Luckiest Guy', cursive", fontSize: '20px', cursor: 'pointer' },
+  successBox: { marginTop: '25px', padding: '20px', background: '#dcfce7', borderRadius: '20px', border: '3px dashed #166534' },
+  navBar: { 
+    position: 'fixed', 
+    bottom: 0, left: 0, right: 0,
+    background: '#fff', 
+    display: 'flex', 
+    justifyContent: 'space-around', 
+    padding: '15px 0', 
+    borderTop: '4px solid #000',
+    zIndex: 1000 
+  },
+  navBtn: { border: 'none', background: 'none', textAlign: 'center', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive", fontSize: '28px' }
 };
