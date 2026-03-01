@@ -2,7 +2,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { useRouter } from 'next/navigation';
-import confetti from 'canvas-confetti'; // Run: npm install canvas-confetti
 
 export default function ConfessionsBoard() {
   const [user, setUser] = useState(null);
@@ -11,13 +10,21 @@ export default function ConfessionsBoard() {
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showWelcome, setShowWelcome] = useState(true);
-  const [swipeDir, setSwipeDir] = useState(''); // 'right' or 'left'
+  const [swipeDir, setSwipeDir] = useState(''); 
   
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState(null);
   const [previewData, setPreviewData] = useState(null);
 
   const router = useRouter();
+
+  // Load Confetti via CDN script to avoid build errors
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js';
+    script.async = true;
+    document.body.appendChild(script);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -50,8 +57,6 @@ export default function ConfessionsBoard() {
 
   const handleVote = async (captionId, value) => {
     if (!user) return;
-    
-    // Trigger Animation
     setSwipeDir(value === 1 ? 'right' : 'left');
 
     try {
@@ -60,11 +65,10 @@ export default function ConfessionsBoard() {
         created_datetime_utc: new Date().toISOString()
       }, { onConflict: 'caption_id, profile_id' });
       
-      // Delay state change until animation finishes
       setTimeout(() => {
         const nextIndex = currentIndex + 1;
-        if (nextIndex >= captions.length) {
-          confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#fbcfe8', '#db2777', '#ffffff'] });
+        if (nextIndex >= captions.length && window.confetti) {
+          window.confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 }, colors: ['#fbcfe8', '#db2777'] });
         }
         setCurrentIndex(nextIndex);
         setSwipeDir('');
@@ -88,23 +92,19 @@ export default function ConfessionsBoard() {
       const gen = await r4.json();
       setPreviewData({ url: cdnUrl, caption: gen[0]?.content });
       fetchData();
-    } catch (err) { alert("Error"); } finally { setUploading(false); }
+    } catch (err) { alert("Upload error"); } finally { setUploading(false); }
   };
 
-  if (loading) return <div style={styles.loader}>🌸 Watering the flowers...</div>;
-
-  const captionsLeft = captions.length - currentIndex;
+  if (loading) return <div style={styles.loader}>🌸 Blooming...</div>;
 
   return (
     <div style={styles.page}>
       <style dangerouslySetInnerHTML={{ __html: `
         @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@300;600&display=swap');
         @keyframes swipeRight { 
-          0% { transform: translateX(0) rotate(0); box-shadow: 0 0 0 rgba(74,222,128,0); }
           100% { transform: translateX(200%) rotate(20deg); box-shadow: 0 0 50px rgba(74,222,128,0.8); }
         }
         @keyframes swipeLeft { 
-          0% { transform: translateX(0) rotate(0); box-shadow: 0 0 0 rgba(248,113,113,0); }
           100% { transform: translateX(-200%) rotate(-20deg); box-shadow: 0 0 50px rgba(248,113,113,0.8); }
         }
         .swipe-right { animation: swipeRight 0.5s forwards; }
@@ -136,19 +136,17 @@ export default function ConfessionsBoard() {
                     </div>
                   </div>
                 </div>
-                <div style={styles.counter}>{captionsLeft} memes left in the stack ✨</div>
+                <div style={styles.counter}>{captions.length - currentIndex} memes left ✨</div>
               </>
             ) : (
               <div style={styles.doneBox}>
                 <h2 style={{fontSize:'40px', margin:0}}>DONE! 🎉</h2>
-                <p>You've cleared the vibe check.</p>
-                <button onClick={() => setCurrentIndex(0)} style={styles.resetBtn}>Rewatch Stack</button>
+                <button onClick={() => setCurrentIndex(0)} style={styles.resetBtn}>Restart</button>
               </div>
             )}
           </div>
         )}
 
-        {/* ... Wall, Post, and Account tabs remain consistent with logic ... */}
         {activeTab === 'wall' && (
           <div style={styles.wallGrid}>
             <h2 style={styles.tabTitle}>Campus Wall 🧱</h2>
@@ -157,7 +155,7 @@ export default function ConfessionsBoard() {
                 <img src={c.display_url} style={styles.wallImg} alt="meme" />
                 <div style={styles.wallPadding}>
                   <p style={styles.wallText}>{c.content}</p>
-                  <div style={styles.scoreTag}>✨ Score: {c.score}</div>
+                  <div style={styles.scoreTag}>Score: {c.score}</div>
                 </div>
               </div>
             ))}
