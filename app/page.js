@@ -9,250 +9,257 @@ export default function ConfessionsBoard() {
   const [captions, setCaptions] = useState([]);
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [showWelcome, setShowWelcome] = useState(true);
   
-  // Pipeline States
+  // Pipeline & Upload
   const [uploading, setUploading] = useState(false);
   const [file, setFile] = useState(null);
-  const [newCaptions, setNewCaptions] = useState([]); 
+  const [previewData, setPreviewData] = useState(null); // Stores { url, caption } for the new card
 
   const router = useRouter();
 
-  // 1. DATA FETCHING (Persisted Wall Logic)
   const fetchData = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      // Join captions with images table to get the URL
       const { data, error } = await supabase
         .from('captions')
         .select(`
-          id, 
-          content, 
-          image_id,
-          images!image_id ( url, profile_id, is_common_use )
+          id, content, image_id,
+          images!image_id ( url ),
+          caption_votes ( vote_value )
         `)
         .order('id', { ascending: false });
 
       if (error) throw error;
 
-      // Map data safely to handle the image object return
       const formatted = data.map(cap => {
         const imgObj = Array.isArray(cap.images) ? cap.images[0] : cap.images;
+        const score = cap.caption_votes?.reduce((acc, v) => acc + v.vote_value, 0) || 0;
         return { 
           ...cap, 
-          display_url: imgObj?.url || 'https://via.placeholder.com/400?text=Private+Image'
+          display_url: imgObj?.url || 'https://via.placeholder.com/400?text=Pastel+Vibes',
+          score: score
         };
       });
 
       setCaptions(formatted);
     } catch (err) {
-      console.error("Fetch error:", err);
+      console.error(err);
     } finally {
       setLoading(false);
     }
   }, [router]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { 
+    fetchData();
+    const timer = setTimeout(() => setShowWelcome(false), 3000);
+    return () => clearTimeout(timer);
+  }, [fetchData]);
 
-  // 2. THE 4-STEP PIPELINE (The core assignment requirement)
+  const handleVote = async (captionId, value) => {
+    if (!user) return;
+    try {
+      await supabase.from('caption_votes').upsert({
+        caption_id: captionId,
+        profile_id: user.id,
+        vote_value: value,
+        created_datetime_utc: new Date().toISOString()
+      }, { onConflict: 'caption_id, profile_id' });
+      
+      fetchData();
+      setCurrentIndex(prev => (prev + 1) % captions.length);
+    } catch (err) { console.error(err); }
+  };
+
   const handlePipelineUpload = async () => {
-    if (!file || !user) return alert("Select an image first!");
+    if (!file || !user) return;
     setUploading(true);
-    setNewCaptions([]);
-
+    setPreviewData(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session.access_token;
-
-      // STEP 1: Generate Presigned URL
-      const res1 = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
+      
+      const r1 = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ contentType: file.type })
       });
-      const { presignedUrl, cdnUrl } = await res1.json();
-
-      // STEP 2: Upload Image Bytes directly to presignedUrl
-      await fetch(presignedUrl, {
-        method: "PUT",
-        headers: { "Content-Type": file.type },
-        body: file
-      });
-
-      // STEP 3: Register Image URL in the Pipeline
-      const res3 = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      const { presignedUrl, cdnUrl } = await r1.json();
+      
+      await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      
+      const r3 = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: cdnUrl, isCommonUse: false })
       });
-      const { imageId } = await res3.json();
-
-      // STEP 4: Generate Captions
-      const res4 = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageId: imageId })
-      });
-      const generatedData = await res4.json();
-
-      // REQUIREMENT: resulting captions come up right there
-      setNewCaptions(generatedData);
+      const { imageId } = await r3.json();
       
-      // RE-FETCH: ensures the data is now persisted in your Wall
-      fetchData(); 
-    } catch (err) {
-      alert("Pipeline process failed.");
-      console.error(err);
-    } finally {
-      setUploading(false);
+      const r4 = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageId })
+      });
+      const generated = await r4.json();
+      
+      // CREATIVITY: Create a preview card using the first generated caption
+      if (generated && generated.length > 0) {
+        setPreviewData({
+          url: cdnUrl,
+          caption: generated[0].content
+        });
+      }
+      
+      fetchData();
+    } catch (err) { 
+      alert("Pipeline error"); 
+    } finally { 
+      setUploading(false); 
     }
   };
 
-  if (loading) return <div style={styles.loader}>🍭 Loading DormPulse...</div>;
+  const getVibeEmoji = (score) => {
+    if (score > 5) return '👑';
+    if (score > 0) return '✨';
+    if (score < 0) return '💀';
+    return '🧊';
+  };
+
+  if (loading) return <div style={styles.loader}>🌸 Softening the vibes...</div>;
 
   return (
     <div style={styles.page}>
-      <style dangerouslySetInnerHTML={{ __html: `@import url('https://fonts.googleapis.com/css2?family=Luckiest+Guy&family=Poppins:wght@400;900&display=swap');` }} />
+      <style dangerouslySetInnerHTML={{ __html: `@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@300;600&display=swap');` }} />
 
-      {/* HEADER: Fixed top layout fix */}
+      {showWelcome && (
+        <div style={styles.welcomeOverlay}>
+          <div style={styles.welcomeBox}>
+            <h1 style={styles.welcomeText}>Hey {user?.email?.split('@')[0]}! ✨</h1>
+            <p>Welcome to your pastel paradise.</p>
+          </div>
+        </div>
+      )}
+
       <nav style={styles.header}>
         <h1 style={styles.logo}>DormPulse.</h1>
       </nav>
 
       <main style={styles.content}>
-        {/* TAB: VOTE (One by One) */}
         {activeTab === 'home' && (
-          <div style={styles.tabSection}>
+          <div style={styles.view}>
             {captions[currentIndex] ? (
-              <div key={captions[currentIndex].id} style={styles.card}>
+              <div key={captions[currentIndex].id} style={styles.pastelCard}>
                 <img src={captions[currentIndex].display_url} style={styles.cardImg} alt="meme" />
                 <div style={styles.cardBody}>
                   <p style={styles.cardCaption}>“{captions[currentIndex].content}”</p>
-                  <div style={styles.cardActions}>
-                    <button onClick={() => setCurrentIndex(c => (c + 1) % captions.length)} style={styles.trashBtn}>🗑️ TRASH</button>
-                    <button onClick={() => setCurrentIndex(c => (c + 1) % captions.length)} style={styles.fireBtn}>🔥 FIRE</button>
+                  <div style={styles.actionRow}>
+                    <button onClick={() => handleVote(captions[currentIndex].id, -1)} style={styles.trashBtn}>👎 Trash</button>
+                    <button onClick={() => handleVote(captions[currentIndex].id, 1)} style={styles.fireBtn}>💖 Love</button>
                   </div>
                 </div>
               </div>
-            ) : <p style={{textAlign: 'center'}}>No memes found. Head to Post!</p>}
+            ) : <p style={{textAlign:'center'}}>End of the stack! 🧊</p>}
           </div>
         )}
 
-        {/* TAB: THE WALL (Full Wall View) */}
         {activeTab === 'wall' && (
           <div style={styles.wallGrid}>
-            <h2 style={styles.tabHeader}>The Meme Wall</h2>
+            <h2 style={styles.tabTitle}>Campus Wall</h2>
             {captions.map(c => (
               <div key={c.id} style={styles.wallItem}>
                 <img src={c.display_url} style={styles.wallImg} alt="meme" />
-                <div style={styles.wallContent}>
+                <div style={styles.wallPadding}>
                   <p style={styles.wallText}>{c.content}</p>
+                  <div style={styles.scoreTag}>
+                    {getVibeEmoji(c.score)} Community Score: {c.score}
+                  </div>
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        {/* TAB: UPLOAD (The Pipeline Steps) */}
         {activeTab === 'upload' && (
-          <div style={styles.tabSection}>
-            <div style={styles.uploadCard}>
-              <h2 style={styles.tabHeader}>New Post</h2>
-              <input type="file" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
-              <button onClick={handlePipelineUpload} disabled={uploading} style={styles.actionBtn}>
-                {uploading ? 'PIPELINE PROCESSING...' : 'GENERATE CAPTIONS'}
-              </button>
-            </div>
-            
-            {newCaptions.length > 0 && (
-              <div style={styles.successBox}>
-                <h3 style={{marginTop: 0}}>✨ Caption Results:</h3>
-                {newCaptions.map((nc, i) => (
-                  <p key={i} style={{fontWeight: 'bold'}}>✅ {nc.content}</p>
-                ))}
+          <div style={styles.view}>
+            {!previewData ? (
+              <div style={styles.uploadCard}>
+                <h2 style={styles.tabTitle}>Post a Vibe</h2>
+                <input type="file" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+                <button onClick={handlePipelineUpload} disabled={uploading} style={styles.genBtn}>
+                  {uploading ? 'Processing...' : 'Magic Upload'}
+                </button>
+              </div>
+            ) : (
+              <div style={styles.previewContainer}>
+                <h3 style={styles.tabTitle}>✨ Success! Post Created:</h3>
+                <div style={styles.pastelCard}>
+                  <img src={previewData.url} style={styles.cardImg} alt="preview" />
+                  <div style={styles.cardBody}>
+                    <p style={styles.cardCaption}>“{previewData.caption}”</p>
+                  </div>
+                </div>
+                <button onClick={() => setPreviewData(null)} style={styles.resetBtn}>Upload Another</button>
               </div>
             )}
           </div>
         )}
+
+        {activeTab === 'account' && (
+          <div style={styles.view}>
+            <div style={styles.uploadCard}>
+              <div style={styles.avatar}>{user?.email?.charAt(0).toUpperCase()}</div>
+              <h2 style={styles.tabTitle}>Hi, {user?.email?.split('@')[0]}!</h2>
+              <p style={{color: '#888', marginBottom:'20px'}}>{user?.email}</p>
+              <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>
+                Logout
+              </button>
+            </div>
+          </div>
+        )}
       </main>
 
-      {/* NAVIGATION: Fixed bottom */}
       <nav style={styles.navBar}>
-        <button onClick={() => setActiveTab('home')} style={styles.navBtn}>🔥<br/>Vote</button>
-        <button onClick={() => setActiveTab('wall')} style={styles.navBtn}>🧱<br/>Wall</button>
-        <button onClick={() => setActiveTab('upload')} style={styles.navBtn}>➕<br/>Post</button>
+        <button onClick={() => setActiveTab('home')} style={{...styles.navBtn, opacity: activeTab === 'home' ? 1 : 0.5}}>🏠<br/>Vote</button>
+        <button onClick={() => setActiveTab('wall')} style={{...styles.navBtn, opacity: activeTab === 'wall' ? 1 : 0.5}}>🧱<br/>Wall</button>
+        <button onClick={() => setActiveTab('upload')} style={{...styles.navBtn, opacity: activeTab === 'upload' ? 1 : 0.5}}>➕<br/>Post</button>
+        <button onClick={() => setActiveTab('account')} style={{...styles.navBtn, opacity: activeTab === 'account' ? 1 : 0.5}}>👤<br/>Me</button>
       </nav>
     </div>
   );
 }
 
-// 3. THE STYLING TOOLKIT (Layout Fixes)
 const styles = {
-  page: { 
-    background: '#f8f8f8', 
-    minHeight: '100vh', 
-    width: '100%',
-    display: 'flex',
-    flexDirection: 'column',
-    fontFamily: "'Poppins', sans-serif" 
-  },
-  header: { 
-    position: 'fixed', 
-    top: 0, left: 0, right: 0,
-    height: '70px', 
-    background: '#fff', 
-    display: 'flex', 
-    alignItems: 'center', 
-    justifyContent: 'center', 
-    borderBottom: '4px solid #000', 
-    zIndex: 1000 
-  },
-  logo: { fontFamily: "'Luckiest Guy', cursive", fontSize: '28px', color: '#6366f1', margin: 0 },
-  content: { 
-    paddingTop: '100px', // Pushes content below the fixed header
-    paddingBottom: '110px', // Prevents nav overlap at bottom
-    maxWidth: '480px', 
-    width: '100%',
-    margin: '0 auto', 
-    paddingLeft: '15px', 
-    paddingRight: '15px' 
-  },
-  tabSection: { width: '100%' },
-  tabHeader: { fontFamily: "'Luckiest Guy', cursive", textAlign: 'center', marginBottom: '20px' },
-  card: { 
-    background: '#fff', 
-    borderRadius: '25px', 
-    border: '4px solid #000', 
-    overflow: 'hidden', 
-    boxShadow: '10px 10px 0 #000' 
-  },
-  cardImg: { width: '100%', height: 'auto', maxHeight: '55vh', objectFit: 'cover', background: '#ddd', display: 'block' },
-  cardBody: { padding: '20px', textAlign: 'center' },
-  cardCaption: { fontSize: '22px', fontWeight: '900', margin: '0 0 20px 0' },
-  cardActions: { display: 'flex', gap: '15px' },
-  fireBtn: { flex: 1, background: '#4ade80', padding: '16px', borderRadius: '15px', border: '3px solid #000', fontWeight: '900', cursor: 'pointer', fontFamily: "'Luckiest Guy', cursive" },
-  trashBtn: { flex: 1, background: '#f87171', padding: '16px', borderRadius: '15px', border: '3px solid #000', fontWeight: '900', cursor: 'pointer', fontFamily: "'Luckiest Guy', cursive" },
+  page: { background: '#fdf2f8', minHeight: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Fredoka', sans-serif" },
+  welcomeOverlay: { position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.9)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  welcomeBox: { textAlign: 'center', padding: '40px', background: '#fff', borderRadius: '30px', border: '5px solid #fbcfe8' },
+  welcomeText: { color: '#db2777', margin: 0 },
+  header: { position: 'fixed', top: 0, width: '100%', height: '70px', background: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '2px solid #fce7f3', zIndex: 1000 },
+  logo: { fontSize: '24px', color: '#db2777', fontWeight: '600' },
+  content: { paddingTop: '90px', paddingBottom: '120px', maxWidth: '450px', width: '100%', margin: '0 auto', paddingLeft: '15px', paddingRight: '15px' },
+  view: { width: '100%' },
+  tabTitle: { textAlign: 'center', color: '#be185d', margin: '0 0 20px 0', fontSize: '20px' },
+  pastelCard: { background: '#fff', borderRadius: '30px', border: '3px solid #fbcfe8', overflow: 'hidden', boxShadow: '0 10px 25px rgba(219,39,119,0.1)' },
+  cardImg: { width: '100%', maxHeight: '50vh', objectFit: 'cover', display: 'block' },
+  cardBody: { padding: '25px', textAlign: 'center' },
+  cardCaption: { fontSize: '20px', fontWeight: '600', color: '#444', margin: 0 },
+  actionRow: { display: 'flex', gap: '15px', marginTop: '20px' },
+  fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '15px', borderRadius: '20px', border: 'none', fontWeight: '600', cursor: 'pointer' },
+  trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '15px', borderRadius: '20px', border: 'none', fontWeight: '600', cursor: 'pointer' },
   wallGrid: { display: 'flex', flexDirection: 'column', gap: '20px' },
-  wallItem: { background: '#fff', borderRadius: '20px', border: '3px solid #000', overflow: 'hidden' },
-  wallImg: { width: '100%', display: 'block', borderBottom: '3px solid #000' },
-  wallContent: { padding: '15px' },
-  wallText: { fontWeight: '900', fontSize: '18px' },
-  uploadCard: { background: '#fff', padding: '30px', borderRadius: '25px', border: '4px solid #000', textAlign: 'center' },
-  fileInput: { margin: '20px 0', width: '100%' },
-  actionBtn: { width: '100%', padding: '18px', background: '#6366f1', color: '#fff', border: '3px solid #000', borderRadius: '15px', fontFamily: "'Luckiest Guy', cursive", fontSize: '20px', cursor: 'pointer' },
-  successBox: { marginTop: '25px', padding: '20px', background: '#dcfce7', borderRadius: '20px', border: '3px dashed #166534' },
-  navBar: { 
-    position: 'fixed', 
-    bottom: 0, left: 0, right: 0,
-    background: '#fff', 
-    display: 'flex', 
-    justifyContent: 'space-around', 
-    padding: '15px 0', 
-    borderTop: '4px solid #000',
-    zIndex: 1000 
-  },
-  navBtn: { border: 'none', background: 'none', textAlign: 'center', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Luckiest Guy', cursive", fontSize: '28px' }
+  wallItem: { background: '#fff', borderRadius: '25px', border: '2px solid #fce7f3', overflow: 'hidden' },
+  wallImg: { width: '100%', borderBottom: '1px solid #fce7f3' },
+  wallPadding: { padding: '15px' },
+  wallText: { fontWeight: '600', color: '#333', fontSize: '16px' },
+  scoreTag: { marginTop: '8px', fontSize: '12px', background: '#fdf2f8', color: '#db2777', padding: '5px 12px', borderRadius: '50px', display: 'inline-block' },
+  uploadCard: { background: '#fff', padding: '40px 30px', borderRadius: '30px', border: '3px solid #fbcfe8', textAlign: 'center' },
+  fileInput: { marginBottom: '20px', width: '100%' },
+  genBtn: { width: '100%', padding: '15px', background: '#db2777', color: '#fff', borderRadius: '20px', border: 'none', fontWeight: '600', fontSize: '18px', cursor: 'pointer' },
+  previewContainer: { textAlign: 'center' },
+  resetBtn: { marginTop: '20px', background: 'none', border: 'none', color: '#db2777', textDecoration: 'underline', cursor: 'pointer', fontWeight: '600' },
+  avatar: { width: '70px', height: '70px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 15px', fontSize: '28px', color: '#db2777', fontWeight: '600' },
+  logoutBtn: { width: '100%', background: '#fff', border: '2px solid #db2777', color: '#db2777', padding: '12px', borderRadius: '15px', fontWeight: '600', cursor: 'pointer' },
+  navBar: { position: 'fixed', bottom: 0, width: '100%', height: '85px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '2px solid #fce7f3', zIndex: 1000 },
+  navBtn: { border: 'none', background: 'none', textAlign: 'center', color: '#db2777', fontWeight: '600', fontSize: '12px', cursor: 'pointer', transition: 'opacity 0.2s' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777', fontSize: '20px' }
 };
