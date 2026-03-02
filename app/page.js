@@ -6,19 +6,15 @@ import { useRouter } from 'next/navigation';
 export default function DormPulseGarden() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [captions, setCaptions] = useState([]);
-  const [history, setHistory] = useState([]); 
+  const [captions, setCaptions] = useState([]); // This will be our active queue
+  const [history, setHistory] = useState([]); // Array of full objects for undo
   const [activeTab, setActiveTab] = useState('home'); 
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState('all'); 
   const [hasMounted, setHasMounted] = useState(false);
   const [swipeDir, setSwipeDir] = useState(''); 
   const [affirmation, setAffirmation] = useState('');
 
-  const router = useRouter();
-
-  // 1. Personalized Affirmations
   const phrases = [
     "Every flower blooms in its own time. You are doing great.",
     "Your presence makes this garden more beautiful.",
@@ -48,15 +44,13 @@ export default function DormPulseGarden() {
 
       const formatted = data.map(cap => {
         const votes = cap.caption_votes || [];
-        const ups = votes.filter(v => v.vote_value === 1).length;
-        const downs = votes.filter(v => v.vote_value === -1).length;
         return {
           ...cap,
           content: cap.content || "",
           display_url: cap.images?.url || 'https://via.placeholder.com/400',
-          upvotes: ups,
-          downvotes: downs,
-          net: ups - downs
+          upvotes: votes.filter(v => v.vote_value === 1).length,
+          downvotes: votes.filter(v => v.vote_value === -1).length,
+          net: votes.filter(v => v.vote_value === 1).length - votes.filter(v => v.vote_value === -1).length
         };
       });
       setCaptions(formatted);
@@ -66,52 +60,57 @@ export default function DormPulseGarden() {
 
   useEffect(() => { if (hasMounted) fetchData(); }, [hasMounted, fetchData]);
 
-  const filteredCaptions = useMemo(() => {
-    let list = [...captions];
+  // --- REWIRED LOGIC: THE QUEUE SYSTEM ---
+
+  const handleVote = async (value) => {
+    if (captions.length === 0) return;
+    const currentCard = captions[0]; // Always act on the first card
+    
+    setSwipeDir(value === 1 ? 'right' : 'left');
+    
+    try {
+      await supabase.from('caption_votes').upsert({
+        caption_id: currentCard.id, profile_id: user.id, vote_value: value,
+        created_datetime_utc: new Date().toISOString()
+      }, { onConflict: 'caption_id, profile_id' });
+      
+      setTimeout(() => {
+        setHistory(prev => [currentCard, ...prev]); // Save full card to undo
+        setCaptions(prev => prev.slice(1)); // Remove the first card
+        setSwipeDir('');
+      }, 450);
+    } catch (err) { setSwipeDir(''); }
+  };
+
+  const handleSkip = () => {
+    if (captions.length <= 1) return;
+    setCaptions(prev => {
+      const [first, ...rest] = prev;
+      return [...rest, first]; // Move first card to the end
+    });
+  };
+
+  const handleUndo = async () => {
+    if (history.length === 0) return;
+    const lastCard = history[0];
+    
+    try {
+      await supabase.from('caption_votes').delete().match({ caption_id: lastCard.id, profile_id: user.id });
+      setHistory(prev => prev.slice(1)); // Remove from history
+      setCaptions(prev => [lastCard, ...prev]); // Put it back at the front
+    } catch (err) { console.error(err); }
+  };
+
+  // For the Wall/Search tabs, we still want a sorted view of everything
+  const wallData = useMemo(() => {
+    let list = [...captions, ...history]; // Combine everything for the list view
     if (sortMode === 'high') list.sort((a, b) => b.net - a.net);
     if (sortMode === 'low') list.sort((a, b) => a.net - b.net);
     if (searchQuery.trim()) {
       list = list.filter(c => c.content?.toLowerCase().includes(searchQuery.toLowerCase()));
     }
     return list;
-  }, [captions, sortMode, searchQuery]);
-
-  // --- LOGIC: VOTE, SKIP, UNDO ---
-
-  const handleVote = async (captionId, value) => {
-    setSwipeDir(value === 1 ? 'right' : 'left');
-    try {
-      await supabase.from('caption_votes').upsert({
-        caption_id: captionId, profile_id: user.id, vote_value: value,
-        created_datetime_utc: new Date().toISOString()
-      }, { onConflict: 'caption_id, profile_id' });
-      
-      setTimeout(() => {
-        setHistory(prev => [...prev, captionId]); 
-        setCurrentIndex(prev => prev + 1);
-        setSwipeDir('');
-        fetchData();
-      }, 450);
-    } catch (err) { setSwipeDir(''); }
-  };
-
-  const handleSkip = () => {
-    const currentCard = captions[currentIndex];
-    const remaining = captions.filter((_, idx) => idx !== currentIndex);
-    setCaptions([...remaining, currentCard]);
-    // The next card naturally slides into the currentIndex slot
-  };
-
-  const handleUndo = async () => {
-    if (history.length === 0 || currentIndex === 0) return;
-    const lastId = history[history.length - 1];
-    try {
-      await supabase.from('caption_votes').delete().match({ caption_id: lastId, profile_id: user.id });
-      setHistory(prev => prev.slice(0, -1));
-      setCurrentIndex(prev => prev - 1);
-      fetchData();
-    } catch (err) { console.error(err); }
-  };
+  }, [captions, history, sortMode, searchQuery]);
 
   if (!hasMounted) return null;
   if (loading) return <div style={styles.loader}>🌸 Blooming...</div>;
@@ -127,33 +126,34 @@ export default function DormPulseGarden() {
           0% { transform: translateY(-10vh) translateX(0) rotate(0); opacity: 1; }
           100% { transform: translateY(110vh) translateX(100px) rotate(360deg); opacity: 0; }
         }
-        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; font-size: 24px; animation: drift 12s linear infinite; z-index: 0; pointer-events: none; }
-        .flower-rotate { animation: slowRotate 60s linear infinite; }
+        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; font-size: 24px; animation: drift 15s linear infinite; z-index: 0; pointer-events: none; }
+        .flower-rotate { animation: slowRotate 70s linear infinite; }
         .swipe-right { animation: swipeRight 0.5s forwards; }
         .swipe-left { animation: swipeLeft 0.5s forwards; }
         @keyframes swipeRight { 100% { transform: translateX(150%) rotate(20deg); opacity: 0; } }
         @keyframes swipeLeft { 100% { transform: translateX(-150%) rotate(-20deg); opacity: 0; } }
       ` }} />
 
-      {[...Array(8)].map((_, i) => (
-        <div key={i} className="petal-drift" style={{ left: `${Math.random() * 100}%`, animationDelay: `${i * 1.5}s` }}>🌸</div>
+      {[...Array(6)].map((_, i) => (
+        <div key={i} className="petal-drift" style={{ left: `${Math.random() * 100}%`, animationDelay: `${i * 2}s` }}>🌸</div>
       ))}
 
       <nav style={styles.header}><h1 style={styles.logo}>DormPulse.</h1></nav>
 
       <main style={styles.content}>
         
+        {/* TAB: HOME */}
         {activeTab === 'home' && (
           <div style={styles.centerContainer}>
-            {currentIndex < captions.length ? (
+            {captions.length > 0 ? (
               <>
                 <div className={swipeDir === 'right' ? 'swipe-right' : swipeDir === 'left' ? 'swipe-left' : ''} style={styles.pastelCard}>
-                  <img src={captions[currentIndex].display_url} style={styles.cardImg} />
+                  <img src={captions[0].display_url} style={styles.cardImg} />
                   <div style={styles.cardBody}>
-                    <p style={styles.cardCaption}>“{captions[currentIndex].content}”</p>
+                    <p style={styles.cardCaption}>“{captions[0].content}”</p>
                     <div style={styles.actionRow}>
-                      <button onClick={() => handleVote(captions[currentIndex].id, -1)} style={styles.trashBtn}>👎</button>
-                      <button onClick={() => handleVote(captions[currentIndex].id, 1)} style={styles.fireBtn}>💖</button>
+                      <button onClick={() => handleVote(-1)} style={styles.trashBtn}>👎</button>
+                      <button onClick={() => handleVote(1)} style={styles.fireBtn}>💖</button>
                     </div>
                   </div>
                 </div>
@@ -169,13 +169,14 @@ export default function DormPulseGarden() {
               </>
             ) : (
               <div style={styles.doneBox}>
-                <h1 style={{fontSize:'48px', color: '#db2777'}}>ALL BLOOMED! 🌸</h1>
-                <button onClick={() => {setCurrentIndex(0); setHistory([]); fetchData();}} style={styles.resetBtn}>Restart Garden</button>
+                <h1 style={{fontSize:'40px', color: '#db2777'}}>GARDEN CLEAR! 🌸</h1>
+                <button onClick={fetchData} style={styles.resetBtn}>Refresh Garden</button>
               </div>
             )}
           </div>
         )}
 
+        {/* TAB: THE BIG FLOWER */}
         {activeTab === 'wall' && (
           <div style={styles.centerContainer}>
             <div className="flower-rotate" style={styles.giantFlowerWrapper}>
@@ -189,7 +190,7 @@ export default function DormPulseGarden() {
               ].map((petal, i) => (
                 <div key={i} style={{...styles.giantPetal, transform: `rotate(${petal.deg}deg) translateY(-145px)`}} 
                      onClick={() => { setSortMode(petal.mode); setActiveTab('search'); }}>
-                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '11px', fontWeight:'600', color:'#fff', textAlign:'center', lineHeight: '1.2'}}>
+                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '11px', fontWeight:'600', color:'#fff', textAlign:'center', width: '80%'}}>
                     {petal.lab}
                   </div>
                 </div>
@@ -199,12 +200,13 @@ export default function DormPulseGarden() {
           </div>
         )}
 
+        {/* TAB: SEARCH */}
         {activeTab === 'search' && (
           <div style={styles.searchView}>
-            <h2 style={{color:'#db2777', textAlign:'center'}}>Garden Feed</h2>
-            <input style={styles.searchBar} placeholder="Search petals..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+            <h2 style={{color:'#db2777', textAlign:'center'}}>The Wall</h2>
+            <input style={styles.searchBar} placeholder="Search names or words..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             <div style={styles.fullWidthFeed}>
-              {filteredCaptions.map(c => (
+              {wallData.map(c => (
                 <div key={c.id} style={styles.feedItem}>
                   <img src={c.display_url} style={styles.feedImg} />
                   <div style={styles.feedPadding}>
@@ -217,22 +219,24 @@ export default function DormPulseGarden() {
           </div>
         )}
 
+        {/* TAB: ACCOUNT */}
         {activeTab === 'account' && (
           <div style={styles.centerContainer}>
             <div style={styles.uploadCard}>
               <div style={styles.avatar}>{userName.charAt(0).toUpperCase()}</div>
               <h3 style={{margin: '0'}}>Hi, {userName}!</h3>
               <p style={styles.affirmationStyle}>"{affirmation}"</p>
-              <button onClick={() => setActiveTab('about')} style={styles.aboutBtn}>Read About Us</button>
+              <button onClick={() => setActiveTab('about')} style={styles.aboutBtn}>About Nabiha's Project</button>
               <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>Logout</button>
             </div>
           </div>
         )}
 
+        {/* TAB: ABOUT */}
         {activeTab === 'about' && (
           <div style={styles.centerContainer}>
             <div style={styles.aboutCard}>
-              <h2 style={{color: '#db2777'}}>About DormPulse</h2>
+              <h2 style={{color: '#db2777'}}>DormPulse</h2>
               <p>Created by <strong>Nabiha Irfan</strong>.</p>
               <div style={styles.aboutText}>
                 In the long process it took to make, you can now generate captions and vote for them. Every pulse is a memory planted in our shared garden. 🌸
@@ -270,7 +274,7 @@ const styles = {
   fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
   trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
   utilityRow: { display: 'flex', gap: '40px', marginTop: '25px' },
-  utilBtn: { background: 'white', border: '2px solid #fbcfe8', padding: '8px 18px', borderRadius: '15px', color: '#db2777', fontWeight: '600', fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.05)' },
+  utilBtn: { background: 'white', border: '2px solid #fbcfe8', padding: '8px 18px', borderRadius: '15px', color: '#db2777', fontWeight: '600', fontSize: '14px', cursor: 'pointer' },
   searchView: { paddingTop: '80px', paddingBottom: '100px', maxWidth: '500px', margin: '0 auto', paddingLeft:'15px', paddingRight:'15px' },
   searchBar: { width: '100%', padding: '15px', borderRadius: '20px', border: '2px solid #fbcfe8', marginBottom: '20px', outline: 'none' },
   fullWidthFeed: { display: 'flex', flexDirection: 'column', gap: '25px' },
