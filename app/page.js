@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 export default function DormPulseGarden() {
   const router = useRouter();
   
+  // App States
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]); 
@@ -16,17 +17,17 @@ export default function DormPulseGarden() {
   const [hasMounted, setHasMounted] = useState(false);
   const [swipeDir, setSwipeDir] = useState(''); 
   const [affirmation, setAffirmation] = useState('');
-  
-  // States for the Upload Process
-  const [isUploading, setIsUploading] = useState(false);
+
+  // Upload States (The "Post" Tab is back!)
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [generatedCaption, setGeneratedCaption] = useState('');
 
   const phrases = useMemo(() => [
     "Every flower blooms in its own time. You are doing great.",
     "Your presence makes this garden more beautiful.",
     "Bloom where you are planted, and keep reaching for the sun.",
     "Like a seedling, you are stronger than you know.",
-    "Take a deep breath. Even the garden rests sometimes.",
-    "You are a rare bloom in a field of ordinary."
   ], []);
 
   useEffect(() => {
@@ -37,13 +38,10 @@ export default function DormPulseGarden() {
   const fetchData = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.push('/login');
-        return;
-      }
+      if (!session) return router.push('/login');
       setUser(session.user);
 
-      // 1. Get IDs of captions this user has ALREADY voted for
+      // 1. Find every ID the user has already voted on
       const { data: votedData } = await supabase
         .from('caption_votes')
         .select('caption_id')
@@ -51,17 +49,18 @@ export default function DormPulseGarden() {
       
       const votedIds = votedData?.map(v => v.caption_id) || [];
 
-      // 2. Fetch only captions NOT in the votedIds list
-      // This ensures you never see your own stuff twice or re-vote on refresh
+      // 2. Fetch only the ones NOT in that list
       const { data, error } = await supabase
         .from('captions')
         .select(`id, content, images!image_id ( url ), caption_votes ( vote_value )`)
-        .not('id', 'in', `(${votedIds.length > 0 ? votedIds.join(',') : '0'})`)
         .order('id', { ascending: false });
 
       if (error) throw error;
 
-      const formatted = data.map(cap => {
+      // Filter locally to ensure fresh results even if DB is slow
+      const filtered = data.filter(cap => !votedIds.includes(cap.id));
+
+      const formatted = filtered.map(cap => {
         const votes = cap.caption_votes || [];
         return {
           ...cap,
@@ -72,57 +71,20 @@ export default function DormPulseGarden() {
         };
       });
       setCaptions(formatted);
-    } catch (err) { 
-      console.error("Fetch error:", err); 
-    } finally { 
-      setLoading(false); 
-    }
+    } catch (err) { console.error(err); }
+    finally { setLoading(false); }
   }, [router]);
 
-  useEffect(() => { 
-    if (hasMounted) fetchData(); 
-  }, [hasMounted, fetchData]);
+  useEffect(() => { if (hasMounted) fetchData(); }, [hasMounted, fetchData]);
 
-  // --- THE PERMANENT MUTATION LOGIC ---
-  const saveNewPulseToDatabase = async (imageUrl, generatedText) => {
-    setIsUploading(true);
-    try {
-      // 1. Insert into 'images' table first to get the image_id
-      const { data: imgData, error: imgErr } = await supabase
-        .from('images')
-        .insert([{ url: imageUrl, profile_id: user.id }])
-        .select()
-        .single();
-
-      if (imgErr) throw imgErr;
-
-      // 2. Insert into 'captions' table using that image_id
-      const { error: capErr } = await supabase
-        .from('captions')
-        .insert([{ 
-          content: generatedText, 
-          image_id: imgData.id,
-          profile_id: user.id 
-        }]);
-
-      if (capErr) throw capErr;
-
-      // 3. Refresh the garden so the user (and everyone else) can see it!
-      fetchData();
-      alert("Pulse planted! Your memory is now part of the garden forever. 🌸");
-    } catch (err) {
-      console.error("Mutation error:", err);
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
+  // --- VOTE & SKIP ---
   const handleVote = async (value) => {
     if (captions.length === 0) return;
     const currentCard = captions[0];
     setSwipeDir(value === 1 ? 'right' : 'left');
     
     try {
+      // PERMANENT SAVE:
       await supabase.from('caption_votes').upsert({
         caption_id: currentCard.id, profile_id: user.id, vote_value: value,
         created_datetime_utc: new Date().toISOString()
@@ -144,37 +106,44 @@ export default function DormPulseGarden() {
     });
   };
 
-  const handleUndo = async () => {
-    if (history.length === 0) return;
-    const lastCard = history[0];
+  // --- THE POST FUNCTION ---
+  const handleUploadAndPost = async () => {
+    if (!file || !generatedCaption) return alert("Select a photo and generate a caption first!");
+    setUploading(true);
     try {
-      await supabase.from('caption_votes').delete().match({ caption_id: lastCard.id, profile_id: user.id });
-      setHistory(prev => prev.slice(1)); 
-      setCaptions(prev => [lastCard, ...prev]); 
+      // 1. Upload Image to Storage (Simplified for this example)
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+      const { data: storageData, error: storageError } = await supabase.storage
+        .from('pulse-images')
+        .upload(fileName, file);
+
+      if (storageError) throw storageError;
+      const { data: { publicUrl } } = supabase.storage.from('pulse-images').getPublicUrl(fileName);
+
+      // 2. Link to Database
+      const { data: imgRecord } = await supabase.from('images').insert([{ url: publicUrl, profile_id: user.id }]).select().single();
+      await supabase.from('captions').insert([{ content: generatedCaption, image_id: imgRecord.id, profile_id: user.id }]);
+
+      alert("Memory Planted! 🌸");
+      setFile(null);
+      setGeneratedCaption('');
+      setActiveTab('home');
+      fetchData();
     } catch (err) { console.error(err); }
+    finally { setUploading(false); }
   };
 
   if (!hasMounted) return null;
   if (loading) return <div style={styles.loader}>🌸 Blooming...</div>;
 
-  const userName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || "Gardener";
-
   return (
     <div style={styles.page}>
-       {/* Styles and Petal Drift remain the same as previous version */}
-       <style dangerouslySetInnerHTML={{ __html: `
-        @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap');
-        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; font-size: 24px; animation: drift 15s linear infinite; z-index: 0; pointer-events: none; }
-        @keyframes drift { 0% { transform: translateY(-10vh) rotate(0); } 100% { transform: translateY(110vh) rotate(360deg); } }
-        .swipe-right { animation: swipeRight 0.5s forwards; }
-        .swipe-left { animation: swipeLeft 0.5s forwards; }
-        @keyframes swipeRight { 100% { transform: translateX(150%) rotate(20deg); opacity: 0; } }
-        @keyframes swipeLeft { 100% { transform: translateX(-150%) rotate(-20deg); opacity: 0; } }
-      ` }} />
-
       <nav style={styles.header}><h1 style={styles.logo}>DormPulse.</h1></nav>
 
       <main style={styles.content}>
+        
+        {/* HOME VOTE TAB */}
         {activeTab === 'home' && (
           <div style={styles.centerContainer}>
             {captions.length > 0 ? (
@@ -187,45 +156,55 @@ export default function DormPulseGarden() {
                       <button onClick={() => handleVote(-1)} style={styles.trashBtn}>👎</button>
                       <button onClick={() => handleVote(1)} style={styles.fireBtn}>💖</button>
                     </div>
-                    <div style={styles.counter}>{captions.length} pulses remaining</div>
+                    <div style={styles.counter}>{captions.length} pulses left</div>
                   </div>
                 </div>
-
                 <div style={styles.utilityRow}>
-                  <button onClick={handleUndo} disabled={history.length === 0} style={{...styles.utilBtn, opacity: history.length === 0 ? 0.3 : 1}}>↩️ Undo</button>
-                  <button onClick={handleSkip} style={{...styles.utilBtn, background: '#f3e8ff', borderColor: '#d8b4fe'}}>⏭️ Skip</button>
+                   <button onClick={handleSkip} style={styles.utilBtn}>⏭️ Skip</button>
                 </div>
               </>
             ) : (
-              <div style={styles.doneBox}>
-                <h1 style={{fontSize:'40px', color: '#db2777'}}>GARDEN CLEAR! 🌸</h1>
-                <p>You've voted on everything. Check back later for new blooms!</p>
-                <button onClick={fetchData} style={styles.resetBtn}>Refresh for New Posts</button>
-              </div>
+              <div style={styles.doneBox}><h1>GARDEN CLEAR! 🌸</h1><button onClick={fetchData} style={styles.resetBtn}>Refresh</button></div>
             )}
           </div>
         )}
 
-        {/* ... Rest of tabs (Wall, Search, Account) ... */}
+        {/* POST TAB (REINSTATED) */}
+        {activeTab === 'post' && (
+          <div style={styles.centerContainer}>
+            <div style={styles.uploadCard}>
+              <h2 style={{color:'#db2777'}}>Plant a Memory</h2>
+              <input type="file" onChange={(e) => setFile(e.target.files[0])} style={{marginBottom:'10px'}} />
+              <textarea 
+                placeholder="Write or generate a caption..." 
+                value={generatedCaption}
+                onChange={(e) => setGeneratedCaption(e.target.value)}
+                style={styles.textArea}
+              />
+              <button onClick={handleUploadAndPost} disabled={uploading} style={styles.aboutBtn}>
+                {uploading ? "Planting..." : "Post to Garden 🌸"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* OTHER TABS (Search, Account) */}
         {activeTab === 'account' && (
           <div style={styles.centerContainer}>
             <div style={styles.uploadCard}>
-              <div style={styles.avatar}>{userName.charAt(0).toUpperCase()}</div>
-              <h3>Hi, {userName}!</h3>
+              <h3>Hi, {user?.email?.split('@')[0]}!</h3>
               <p style={styles.affirmationStyle}>"{affirmation}"</p>
-              
-              {/* This is where you would call saveNewPulseToDatabase after your generation logic */}
-              <button onClick={() => setActiveTab('about')} style={styles.aboutBtn}>About Nabiha's Project</button>
               <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>Logout</button>
             </div>
           </div>
         )}
+
       </main>
 
       <nav style={styles.navBar}>
         <button onClick={() => setActiveTab('home')} style={styles.navBtn}>🏠<br/>Vote</button>
-        <button onClick={() => setActiveTab('wall')} style={styles.navBtn}>🌸<br/>Garden</button>
-        <button onClick={() => setActiveTab('search')} style={styles.navBtn}>🔍<br/>Search</button>
+        <button onClick={() => setActiveTab('post')} style={styles.navBtn}>➕<br/>Post</button>
+        <button onClick={() => setActiveTab('search')} style={styles.navBtn}>🔍<br/>Wall</button>
         <button onClick={() => setActiveTab('account')} style={styles.navBtn}>👤<br/>Me</button>
       </nav>
     </div>
@@ -233,30 +212,28 @@ export default function DormPulseGarden() {
 }
 
 const styles = {
-    // ... all previous styles ...
-    counter: { marginTop: '15px', fontSize: '11px', color: '#db2777', fontWeight: '600', opacity: 0.6, letterSpacing: '1px', textTransform: 'uppercase' },
-    page: { background: '#fff5f7', minHeight: '100vh', fontFamily: "'Fredoka', sans-serif" },
-    header: { position: 'fixed', top: 0, width: '100%', height: '60px', background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #fce7f3', zIndex: 1000 },
-    logo: { fontSize: '20px', color: '#db2777', fontWeight: '600' },
-    content: { minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1 },
-    centerContainer: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' },
-    pastelCard: { background: '#fff', borderRadius: '35px', width: '100%', maxWidth: '360px', overflow: 'hidden', border: '4px solid #fbcfe8', boxShadow: '0 20px 40px rgba(0,0,0,0.1)' },
-    cardImg: { width: '100%', maxHeight: '45vh', objectFit: 'contain', background: '#f9f9f9' },
-    cardBody: { padding: '25px', textAlign: 'center' },
-    cardCaption: { fontSize: '22px', fontWeight: '600' },
-    actionRow: { display: 'flex', gap: '15px', marginTop: '10px' },
-    fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
-    trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
-    utilityRow: { display: 'flex', gap: '40px', marginTop: '25px' },
-    utilBtn: { background: 'white', border: '2px solid #fbcfe8', padding: '8px 18px', borderRadius: '15px', color: '#db2777', fontWeight: '600', fontSize: '14px', cursor: 'pointer' },
-    navBar: { position: 'fixed', bottom: 0, width: '100%', height: '85px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '1px solid #fce7f3', zIndex: 1000 },
-    navBtn: { border: 'none', background: 'none', color: '#db2777', fontWeight: '600', fontSize: '11px' },
-    loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777' },
-    doneBox: { textAlign: 'center', padding: '20px' },
-    resetBtn: { marginTop: '10px', color: '#db2777', fontWeight: '600', background: 'none', border: 'none', textDecoration: 'underline' },
-    uploadCard: { background: '#fff', padding: '40px', borderRadius: '40px', textAlign: 'center', border: '3px solid #fbcfe8', width: '100%', maxWidth: '320px' },
-    avatar: { width: '80px', height: '80px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', color: '#db2777', fontSize: '30px', fontWeight: '600' },
-    affirmationStyle: { fontStyle: 'italic', color: '#db2777', margin: '15px 0 25px', fontSize: '16px', lineHeight: '1.4' },
-    aboutBtn: { display: 'block', width: '100%', margin: '10px 0', padding: '12px', borderRadius: '15px', background: '#fbcfe8', border: 'none', color: '#db2777', fontWeight: '600' },
-    logoutBtn: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #db2777', background: 'none', color: '#db2777', fontWeight: '600' },
+  page: { background: '#fff5f7', minHeight: '100vh', fontFamily: "'Fredoka', sans-serif" },
+  header: { position: 'fixed', top: 0, width: '100%', height: '60px', background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #fce7f3', zIndex: 1000 },
+  logo: { fontSize: '20px', color: '#db2777', fontWeight: '600' },
+  content: { paddingTop: '80px', paddingBottom: '100px' },
+  centerContainer: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' },
+  pastelCard: { background: '#fff', borderRadius: '35px', width: '100%', maxWidth: '360px', overflow: 'hidden', border: '4px solid #fbcfe8', boxShadow: '0 20px 40px rgba(0,0,0,0.1)' },
+  cardImg: { width: '100%', maxHeight: '45vh', objectFit: 'contain' },
+  cardBody: { padding: '25px', textAlign: 'center' },
+  cardCaption: { fontSize: '22px', fontWeight: '600' },
+  actionRow: { display: 'flex', gap: '15px', marginTop: '10px' },
+  fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
+  trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
+  counter: { marginTop: '15px', fontSize: '12px', color: '#db2777', opacity: 0.6 },
+  utilityRow: { marginTop: '20px' },
+  utilBtn: { background: '#f3e8ff', border: '2px solid #d8b4fe', padding: '10px 25px', borderRadius: '15px', color: '#db2777', fontWeight: '600' },
+  navBar: { position: 'fixed', bottom: 0, width: '100%', height: '85px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '1px solid #fce7f3' },
+  navBtn: { border: 'none', background: 'none', color: '#db2777', fontWeight: '600', fontSize: '11px' },
+  uploadCard: { background: '#fff', padding: '30px', borderRadius: '30px', border: '3px solid #fbcfe8', width: '100%', maxWidth: '400px', textAlign:'center' },
+  textArea: { width: '100%', height: '100px', borderRadius: '15px', border: '2px solid #fbcfe8', padding: '10px', marginTop: '10px', marginBottom: '10px' },
+  aboutBtn: { width: '100%', padding: '12px', borderRadius: '15px', background: '#fbcfe8', border: 'none', color: '#db2777', fontWeight: '600' },
+  logoutBtn: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #db2777', background: 'none', color: '#db2777', fontWeight: '600' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777' },
+  doneBox: { textAlign: 'center' },
+  resetBtn: { color: '#db2777', background: 'none', border: 'none', textDecoration: 'underline' }
 };
