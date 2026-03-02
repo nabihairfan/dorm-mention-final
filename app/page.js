@@ -10,6 +10,8 @@ export default function DormPulseGarden() {
   const [activeTab, setActiveTab] = useState('home');
   const [history, setHistory] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [hasSearched, setHasSearched] = useState(false);
 
   // Pipeline & Upload
   const [uploading, setUploading] = useState(false);
@@ -23,6 +25,8 @@ export default function DormPulseGarden() {
   const [gardenMode, setGardenMode] = useState('all');
 
   const router = useRouter();
+
+  const storageKey = user ? `dormpulse-skipped-${user.id}` : null;
 
   const fetchData = useCallback(async () => {
     try {
@@ -68,6 +72,24 @@ export default function DormPulseGarden() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    const saved = localStorage.getItem(storageKey);
+    if (!saved) return;
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) setSkippedIds(parsed);
+    } catch (e) {
+      console.error('Failed to restore skipped captions', e);
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    localStorage.setItem(storageKey, JSON.stringify(skippedIds));
+  }, [storageKey, skippedIds]);
 
   const unvotedCaptions = useMemo(() => captions.filter((c) => !c.hasVoted), [captions]);
 
@@ -190,6 +212,7 @@ export default function DormPulseGarden() {
             content: generated[0].content,
             image_id: imgData.id,
             profile_id: user.id,
+            is_public: true,
           },
         ]);
         if (capErr) throw capErr;
@@ -212,8 +235,17 @@ export default function DormPulseGarden() {
     'Keep growing, the world needs your light. 🌱',
   ];
 
-  const filteredSearch = useMemo(() => {
-    return captions.filter((c) => (c.content || '').toLowerCase().includes(searchQuery.toLowerCase()));
+  const executeSearch = useCallback(() => {
+    const q = searchQuery.trim().toLowerCase();
+    setHasSearched(true);
+
+    if (!q) {
+      setSearchResults(captions);
+      return;
+    }
+
+    const results = captions.filter((c) => (c.content || '').toLowerCase().includes(q));
+    setSearchResults(results);
   }, [captions, searchQuery]);
 
   const gardenCaptions = useMemo(() => {
@@ -272,13 +304,23 @@ export default function DormPulseGarden() {
 
         {activeTab === 'search' && (
           <div style={styles.view}>
-            <input
-              style={styles.searchBar}
-              placeholder="Search captions..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            {filteredSearch.map((c) => (
+            <div style={styles.searchRow}>
+              <input
+                style={styles.searchBar}
+                placeholder="Search captions by words..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') executeSearch();
+                }}
+              />
+              <button style={styles.searchBtn} onClick={executeSearch}>Search</button>
+            </div>
+
+            {!hasSearched && <p style={styles.helperText}>Type a phrase and click Search to find matching captions.</p>}
+            {hasSearched && searchResults.length === 0 && <p style={styles.helperText}>No captions matched your search.</p>}
+
+            {searchResults.map((c) => (
               <div key={c.id} style={styles.feedItem}>
                 <img src={c.display_url} style={{ width: '100%' }} alt="caption result" />
                 <p style={{ padding: '10px' }}>“{c.content}” — ⭐ {c.score}</p>
@@ -371,11 +413,6 @@ export default function DormPulseGarden() {
           <br />
           Garden
         </button>
-        <button onClick={() => router.push('/about')} style={styles.navBtn}>
-          ℹ️
-          <br />
-          About
-        </button>
         <button onClick={() => setActiveTab('account')} style={styles.navBtn}>
           👤
           <br />
@@ -447,7 +484,10 @@ const styles = {
     marginTop: '15px',
     cursor: 'pointer',
   },
-  searchBar: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #fbcfe8', marginBottom: '20px', outline: 'none' },
+  searchRow: { display: 'flex', gap: '8px', marginBottom: '10px' },
+  searchBar: { flex: 1, padding: '12px', borderRadius: '15px', border: '2px solid #fbcfe8', outline: 'none' },
+  searchBtn: { border: 'none', borderRadius: '12px', background: '#db2777', color: '#fff', padding: '0 14px', fontWeight: '700', cursor: 'pointer' },
+  helperText: { color: '#9d174d', fontSize: '13px', marginBottom: '10px' },
   feedItem: { background: '#fff', borderRadius: '20px', marginBottom: '15px', overflow: 'hidden', border: '1px solid #fce7f3' },
   uploadCard: { background: '#fff', padding: '25px', borderRadius: '25px', border: '3px solid #fbcfe8', textAlign: 'center' },
   fileInput: { marginBottom: '15px', width: '100%' },
