@@ -7,6 +7,7 @@ export default function DormPulseGarden() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]);
+  const [history, setHistory] = useState([]); // Tracks IDs for Undo
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,15 +36,13 @@ export default function DormPulseGarden() {
 
       const formatted = data.map(cap => {
         const votes = cap.caption_votes || [];
-        const ups = votes.filter(v => v.vote_value === 1).length;
-        const downs = votes.filter(v => v.vote_value === -1).length;
         return {
           ...cap,
-          content: cap.content || "", // Safety for search
+          content: cap.content || "",
           display_url: cap.images?.url || 'https://via.placeholder.com/400',
-          upvotes: ups,
-          downvotes: downs,
-          net: ups - downs
+          upvotes: votes.filter(v => v.vote_value === 1).length,
+          downvotes: votes.filter(v => v.vote_value === -1).length,
+          net: votes.filter(v => v.vote_value === 1).length - votes.filter(v => v.vote_value === -1).length
         };
       });
       setCaptions(formatted);
@@ -53,19 +52,17 @@ export default function DormPulseGarden() {
 
   useEffect(() => { if (hasMounted) fetchData(); }, [hasMounted, fetchData]);
 
-  // Fixed Search Logic with null-safety
   const filteredCaptions = useMemo(() => {
     let list = [...captions];
     if (sortMode === 'high') list.sort((a, b) => b.net - a.net);
     if (sortMode === 'low') list.sort((a, b) => a.net - b.net);
-    
     if (searchQuery.trim()) {
-      list = list.filter(c => 
-        c.content && c.content.toLowerCase().includes(searchQuery.toLowerCase())
-      );
+      list = list.filter(c => c.content?.toLowerCase().includes(searchQuery.toLowerCase()));
     }
     return list;
   }, [captions, sortMode, searchQuery]);
+
+  // --- NEW LOGIC: VOTE, SKIP, UNDO ---
 
   const handleVote = async (captionId, value) => {
     setSwipeDir(value === 1 ? 'right' : 'left');
@@ -74,12 +71,38 @@ export default function DormPulseGarden() {
         caption_id: captionId, profile_id: user.id, vote_value: value,
         created_datetime_utc: new Date().toISOString()
       }, { onConflict: 'caption_id, profile_id' });
+      
       setTimeout(() => {
+        setHistory(prev => [...prev, captionId]); // Add to undo stack
         setCurrentIndex(prev => prev + 1);
         setSwipeDir('');
         fetchData();
       }, 450);
     } catch (err) { setSwipeDir(''); }
+  };
+
+  const handleSkip = () => {
+    const currentCard = captions[currentIndex];
+    const newCaptions = [...captions];
+    // Remove from current spot and push to the very end
+    newCaptions.splice(currentIndex, 1);
+    newCaptions.push(currentCard);
+    setCaptions(newCaptions);
+    // Note: We don't increment currentIndex because the "new" card slides into the current slot
+  };
+
+  const handleUndo = async () => {
+    if (history.length === 0 || currentIndex === 0) return;
+    
+    const lastId = history[history.length - 1];
+    
+    // 1. Delete the vote from Supabase
+    await supabase.from('caption_votes').delete().match({ caption_id: lastId, profile_id: user.id });
+    
+    // 2. Update UI
+    setHistory(prev => prev.slice(0, -1));
+    setCurrentIndex(prev => prev - 1);
+    fetchData();
   };
 
   if (!hasMounted) return null;
@@ -92,84 +115,94 @@ export default function DormPulseGarden() {
       <style dangerouslySetInnerHTML={{ __html: `
         @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap');
         @keyframes slowRotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes pulseCenter { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-        @keyframes swipeRight { 100% { transform: translateX(150%) rotate(20deg); opacity: 0; } }
-        @keyframes swipeLeft { 100% { transform: translateX(-150%) rotate(-20deg); opacity: 0; } }
-        .flower-rotate { animation: slowRotate 40s linear infinite; }
-        .flower-center-pulse { animation: pulseCenter 4s ease-in-out infinite; }
+        @keyframes drift {
+          0% { transform: translateY(-10vh) translateX(0) rotate(0); opacity: 1; }
+          100% { transform: translateY(110vh) translateX(100px) rotate(360deg); opacity: 0; }
+        }
+        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; font-size: 24px; animation: drift 10s linear infinite; z-index: 0; pointer-events: none; }
+        .flower-rotate { animation: slowRotate 50s linear infinite; }
         .swipe-right { animation: swipeRight 0.5s forwards; }
         .swipe-left { animation: swipeLeft 0.5s forwards; }
+        @keyframes swipeRight { 100% { transform: translateX(150%) rotate(20deg); opacity: 0; } }
+        @keyframes swipeLeft { 100% { transform: translateX(-150%) rotate(-20deg); opacity: 0; } }
       ` }} />
+
+      {[...Array(10)].map((_, i) => (
+        <div key={i} className="petal-drift" style={{ left: `${Math.random() * 100}%`, animationDelay: `${Math.random() * 8}s` }}>🌸</div>
+      ))}
 
       <nav style={styles.header}><h1 style={styles.logo}>DormPulse.</h1></nav>
 
       <main style={styles.content}>
         
-        {/* TAB: HOME (Swiping) */}
         {activeTab === 'home' && (
           <div style={styles.centerContainer}>
             {currentIndex < captions.length ? (
-              <div className={swipeDir === 'right' ? 'swipe-right' : swipeDir === 'left' ? 'swipe-left' : ''} style={styles.pastelCard}>
-                <img src={captions[currentIndex].display_url} style={styles.cardImg} />
-                <div style={styles.cardBody}>
-                  <p style={styles.cardCaption}>“{captions[currentIndex].content}”</p>
-                  <div style={styles.actionRow}>
-                    <button onClick={() => handleVote(captions[currentIndex].id, -1)} style={styles.trashBtn}>👎</button>
-                    <button onClick={() => handleVote(captions[currentIndex].id, 1)} style={styles.fireBtn}>💖</button>
+              <>
+                <div className={swipeDir === 'right' ? 'swipe-right' : swipeDir === 'left' ? 'swipe-left' : ''} style={styles.pastelCard}>
+                  <img src={captions[currentIndex].display_url} style={styles.cardImg} />
+                  <div style={styles.cardBody}>
+                    <p style={styles.cardCaption}>“{captions[currentIndex].content}”</p>
+                    <div style={styles.actionRow}>
+                      <button onClick={() => handleVote(captions[currentIndex].id, -1)} style={styles.trashBtn}>👎</button>
+                      <button onClick={() => handleVote(captions[currentIndex].id, 1)} style={styles.fireBtn}>💖</button>
+                    </div>
                   </div>
                 </div>
-              </div>
+
+                {/* Undo & Skip Row */}
+                <div style={styles.utilityRow}>
+                  <button onClick={handleUndo} disabled={history.length === 0} style={{...styles.utilBtn, opacity: history.length === 0 ? 0.3 : 1}}>
+                    ↩️ Undo
+                  </button>
+                  <button onClick={handleSkip} style={styles.utilBtn}>
+                    ⏭️ Skip
+                  </button>
+                </div>
+              </>
             ) : (
               <div style={styles.doneBox}>
-                <h1>FINITO! 🌸</h1>
-                <button onClick={() => setCurrentIndex(0)} style={styles.resetBtn}>Restart Garden</button>
+                <h1 style={{fontSize:'48px'}}>ALL BLOOMED! 🌸</h1>
+                <button onClick={() => {setCurrentIndex(0); setHistory([]);}} style={styles.resetBtn}>Restart Garden</button>
               </div>
             )}
           </div>
         )}
 
-        {/* TAB: THE MEGA FLOWER MENU */}
         {activeTab === 'wall' && (
           <div style={styles.centerContainer}>
-            <div className="flower-rotate" style={styles.flowerWrapper}>
+            <div className="flower-rotate" style={styles.giantFlowerWrapper}>
               {[
                 { deg: 0, lab: 'View All', mode: 'all' },
-                { deg: 60, lab: 'Highest', mode: 'high' },
-                { deg: 120, lab: 'Lowest', mode: 'low' },
+                { deg: 60, lab: 'Highest Voted Sorted', mode: 'high' },
+                { deg: 120, lab: 'Lowest Voted Sorted', mode: 'low' },
                 { deg: 180, lab: 'View All', mode: 'all' },
-                { deg: 240, lab: 'Highest', mode: 'high' },
-                { deg: 300, lab: 'Lowest', mode: 'low' }
+                { deg: 240, lab: 'Highest Voted Sorted', mode: 'high' },
+                { deg: 300, lab: 'Lowest Voted Sorted', mode: 'low' }
               ].map((petal, i) => (
-                <div key={i} style={{...styles.prettyPetal, transform: `rotate(${petal.deg}deg) translateY(-95px)`}} 
+                <div key={i} style={{...styles.giantPetal, transform: `rotate(${petal.deg}deg) translateY(-145px)`}} 
                      onClick={() => { setSortMode(petal.mode); setActiveTab('search'); }}>
-                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '11px', fontWeight:'600', color:'#fff', textAlign:'center'}}>
+                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '12px', fontWeight:'600', color:'#fff', textAlign:'center', padding: '10px'}}>
                     {petal.lab}
                   </div>
                 </div>
               ))}
-              <div className="flower-center-pulse" style={styles.prettyCenter}>Dorm<br/>Pulse</div>
+              <div style={styles.giantCenter}>Dorm<br/>Pulse</div>
             </div>
-            <p style={styles.flowerInstruction}>Pick a petal to explore categories</p>
           </div>
         )}
 
-        {/* TAB: SEARCH GARDEN (Full width pictures) */}
         {activeTab === 'search' && (
           <div style={styles.searchView}>
-            <div style={styles.searchHeader}>
-              <h2 style={{margin:0, color:'#db2777', fontSize: '24px'}}>Garden: {sortMode === 'all' ? 'All Seeds' : sortMode === 'high' ? 'Best Blooms' : 'Wilting Seeds'}</h2>
-              <input style={styles.searchBar} placeholder="Search for a specific vibe..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-            </div>
+            <h2 style={{color:'#db2777', textAlign:'center'}}>Garden Feed</h2>
+            <input style={styles.searchBar} placeholder="Search petals..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             <div style={styles.fullWidthFeed}>
               {filteredCaptions.map(c => (
                 <div key={c.id} style={styles.feedItem}>
                   <img src={c.display_url} style={styles.feedImg} />
                   <div style={styles.feedPadding}>
                     <p style={styles.feedText}>“{c.content}”</p>
-                    <div style={styles.voteDisplay}>
-                      <span style={{color:'#10b981'}}>👍 {c.upvotes}</span>
-                      <span style={{color:'#ef4444'}}>👎 {c.downvotes}</span>
-                    </div>
+                    <div style={styles.voteDisplay}><span>👍 {c.upvotes}</span><span>👎 {c.downvotes}</span></div>
                   </div>
                 </div>
               ))}
@@ -177,14 +210,26 @@ export default function DormPulseGarden() {
           </div>
         )}
 
-        {/* TAB: ACCOUNT */}
         {activeTab === 'account' && (
           <div style={styles.centerContainer}>
             <div style={styles.uploadCard}>
               <div style={styles.avatar}>{userName.charAt(0).toUpperCase()}</div>
               <h3>Hi, {userName}! 🌸</h3>
-              <p style={styles.affirmation}>"Like a flower, you grow through the dirt to reach the light."</p>
+              <button onClick={() => setActiveTab('about')} style={styles.aboutBtn}>Read About Us</button>
               <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>Logout</button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'about' && (
+          <div style={styles.centerContainer}>
+            <div style={styles.aboutCard}>
+              <h2 style={{color: '#db2777'}}>About DormPulse</h2>
+              <p>Created by <strong>Nabiha Irfan</strong>.</p>
+              <div style={styles.aboutText}>
+                In the long process it took to make, you can now generate captions and vote for them. Every pulse is a memory planted in our shared garden. 🌸
+              </div>
+              <button onClick={() => setActiveTab('account')} style={styles.resetBtn}>Back to Me</button>
             </div>
           </div>
         )}
@@ -201,62 +246,49 @@ export default function DormPulseGarden() {
 }
 
 const styles = {
-  page: { 
-    background: '#fff5f7', 
-    backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 10c-1-3-4-5-7-5-4 0-7 3-7 7 0 3 2 6 5 7-3 1-5 4-5 7 0 4 3 7 7 7 3 0 6-2 7-5 1 3 4 5 7 5 4 0 7-3 7-7 0-3-2-6-5-7 3-1 5-4 5-7 0-4-3-7-7-7-3 0-6 2-7 5z' fill='%23fbcfe8' fill-opacity='0.4'/%3E%3C/svg%3E")`,
-    minHeight: '100vh', 
-    fontFamily: "'Fredoka', sans-serif", 
-    color: '#444' 
-  },
+  page: { background: '#fff5f7', backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 10c-1-3-4-5-7-5-4 0-7 3-7 7 0 3 2 6 5 7-3 1-5 4-5 7 0 4 3 7 7 7 3 0 6-2 7-5 1 3 4 5 7 5 4 0 7-3 7-7 0-3-2-6-5-7 3-1 5-4 5-7 0-4-3-7-7-7-3 0-6 2-7 5z' fill='%23fbcfe8' fill-opacity='0.4'/%3E%3C/svg%3E")`, minHeight: '100vh', fontFamily: "'Fredoka', sans-serif" },
   header: { position: 'fixed', top: 0, width: '100%', height: '60px', background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #fce7f3', zIndex: 1000 },
   logo: { fontSize: '20px', color: '#db2777', fontWeight: '600' },
-  content: { minHeight: '100vh', display: 'flex', flexDirection: 'column' },
+  content: { minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1 },
   centerContainer: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' },
   
-  // FLOWER
-  flowerWrapper: { position: 'relative', width: '100px', height: '100px' },
-  prettyPetal: { 
-    position: 'absolute', width: '75px', height: '115px', 
-    background: 'linear-gradient(to bottom, #ff85a2, #db2777)', 
-    borderRadius: '50% 50% 50% 50% / 80% 80% 20% 20%', 
-    border: '2px solid #fff', 
-    display: 'flex', alignItems: 'center', justifyContent: 'center', 
-    cursor: 'pointer', left: '12px', boxShadow: '0 4px 12px rgba(219,39,119,0.2)'
-  },
-  prettyCenter: { 
-    position: 'absolute', top: '20px', left: '20px', width: '60px', height: '60px', 
-    background: '#ffb3c1', borderRadius: '50%', border: '4px solid #fff', 
-    display: 'flex', alignItems: 'center', justifyContent: 'center', 
-    fontSize: '11px', fontWeight: '600', color: '#db2777', textAlign:'center', zIndex: 10
-  },
-  flowerInstruction: { marginTop: '120px', color: '#db2777', fontWeight: '600', fontSize: '15px' },
+  // GIANT FLOWER
+  giantFlowerWrapper: { position: 'relative', width: '150px', height: '150px' },
+  giantPetal: { position: 'absolute', width: '115px', height: '170px', background: 'linear-gradient(to bottom, #ff85a2, #db2777)', borderRadius: '50% 50% 50% 50% / 80% 80% 20% 20%', border: '3px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', left: '17px', boxShadow: '0 8px 20px rgba(219,39,119,0.3)' },
+  giantCenter: { position: 'absolute', top: '25px', left: '25px', width: '100px', height: '100px', background: '#ffb3c1', borderRadius: '50%', border: '5px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: '600', color: '#db2777', textAlign:'center', zIndex: 10 },
 
-  // SEARCH VIEW (Proper aspect ratios)
-  searchView: { paddingTop: '80px', paddingBottom: '100px', maxWidth: '500px', margin: '0 auto', paddingLeft:'15px', paddingRight:'15px' },
-  searchHeader: { marginBottom: '20px', textAlign: 'center' },
-  searchBar: { width: '100%', padding: '15px', borderRadius: '20px', border: '2px solid #fbcfe8', marginTop: '10px', outline: 'none', fontSize: '16px' },
-  fullWidthFeed: { display: 'flex', flexDirection: 'column', gap: '25px' },
-  feedItem: { background: '#fff', borderRadius: '30px', overflow: 'hidden', border: '1px solid #fce7f3', boxShadow: '0 10px 20px rgba(0,0,0,0.03)' },
-  feedImg: { width: '100%', height: 'auto', display: 'block' },
-  feedPadding: { padding: '20px' },
-  feedText: { fontSize: '18px', fontWeight: '600', color: '#333' },
-  voteDisplay: { display: 'flex', gap: '20px', fontSize: '14px', fontWeight: '600', marginTop: '12px' },
-
-  // SWIPE CARD
-  pastelCard: { background: '#fff', borderRadius: '35px', width: '100%', maxWidth: '360px', overflow: 'hidden', border: '4px solid #fbcfe8', boxShadow: '0 20px 40px rgba(0,0,0,0.08)' },
-  cardImg: { width: '100%', height: 'auto', maxHeight: '50vh', objectFit: 'contain', background: '#f9f9f9' },
+  // HOME CARDS & UTILITY
+  pastelCard: { background: '#fff', borderRadius: '35px', width: '100%', maxWidth: '360px', overflow: 'hidden', border: '4px solid #fbcfe8', boxShadow: '0 20px 40px rgba(0,0,0,0.1)' },
+  cardImg: { width: '100%', maxHeight: '45vh', objectFit: 'contain', background: '#f9f9f9' },
   cardBody: { padding: '25px', textAlign: 'center' },
-  cardCaption: { fontSize: '22px', fontWeight: '600', marginBottom: '20px' },
-  actionRow: { display: 'flex', gap: '15px' },
+  cardCaption: { fontSize: '22px', fontWeight: '600' },
+  actionRow: { display: 'flex', gap: '15px', marginTop: '10px' },
   fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
   trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
+  utilityRow: { display: 'flex', gap: '40px', marginTop: '25px' },
+  utilBtn: { background: 'white', border: '2px solid #fbcfe8', padding: '8px 18px', borderRadius: '15px', color: '#db2777', fontWeight: '600', fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.05)' },
+
+  // FEED & SEARCH
+  searchView: { paddingTop: '80px', paddingBottom: '100px', maxWidth: '500px', margin: '0 auto', paddingLeft:'15px', paddingRight:'15px' },
+  searchBar: { width: '100%', padding: '15px', borderRadius: '20px', border: '2px solid #fbcfe8', marginBottom: '20px', outline: 'none' },
+  fullWidthFeed: { display: 'flex', flexDirection: 'column', gap: '25px' },
+  feedItem: { background: '#fff', borderRadius: '30px', overflow: 'hidden', boxShadow: '0 10px 20px rgba(0,0,0,0.05)' },
+  feedImg: { width: '100%', height: 'auto' },
+  feedPadding: { padding: '20px' },
+  feedText: { fontSize: '18px', fontWeight: '600' },
+  voteDisplay: { display: 'flex', gap: '20px', marginTop: '10px', fontWeight: '600', color: '#db2777' },
+
+  // PROFILE & ABOUT
+  uploadCard: { background: '#fff', padding: '40px', borderRadius: '40px', textAlign: 'center', border: '3px solid #fbcfe8', width: '100%', maxWidth: '320px' },
+  avatar: { width: '80px', height: '80px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', color: '#db2777', fontSize: '30px', fontWeight: '600' },
+  aboutBtn: { display: 'block', width: '100%', margin: '10px 0', padding: '12px', borderRadius: '15px', background: '#fbcfe8', border: 'none', color: '#db2777', fontWeight: '600' },
+  logoutBtn: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #db2777', background: 'none', color: '#db2777', fontWeight: '600' },
+  aboutCard: { background: '#fff', padding: '40px', borderRadius: '40px', border: '3px solid #fbcfe8', textAlign: 'center', maxWidth: '350px' },
+  aboutText: { marginTop: '20px', lineHeight: '1.6', color: '#666', marginBottom: '20px' },
   
-  doneBox: { textAlign: 'center' },
   navBar: { position: 'fixed', bottom: 0, width: '100%', height: '85px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '1px solid #fce7f3', zIndex: 1000 },
   navBtn: { border: 'none', background: 'none', color: '#db2777', fontWeight: '600', fontSize: '11px' },
   loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777' },
-  uploadCard: { background: '#fff', padding: '40px 30px', borderRadius: '40px', textAlign: 'center', border: '3px solid #fbcfe8', width: '100%', maxWidth: '320px' },
-  avatar: { width: '80px', height: '80px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', color: '#db2777', fontSize: '30px', fontWeight: '600' },
-  affirmation: { fontStyle: 'italic', color: '#db2777', margin: '20px 0', fontSize: '18px' },
-  logoutBtn: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #db2777', background: 'none', color: '#db2777', fontWeight: '600' }
+  doneBox: { textAlign: 'center', padding: '20px' },
+  resetBtn: { marginTop: '10px', color: '#db2777', fontWeight: '600', background: 'none', border: 'none', textDecoration: 'underline' }
 };
