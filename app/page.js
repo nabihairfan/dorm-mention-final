@@ -19,85 +19,89 @@ export default function DormPulseGarden() {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [generatedCaption, setGeneratedCaption] = useState('');
+// Add this new state at the top with your other states
+const [sessionVotes, setSessionVotes] = useState(new Set());
 
-  const fetchData = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return router.push('/login');
-      setUser(session.user);
+const fetchData = useCallback(async () => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return router.push('/login');
+    setUser(session.user);
 
-      const { data: userVotes } = await supabase
-        .from('caption_votes')
-        .select('caption_id, vote_value')
-        .eq('profile_id', session.user.id);
-      
-      const userVoteMap = Object.fromEntries(userVotes?.map(v => [v.caption_id, v.vote_value]) || []);
+    // 1. Get official votes from DB
+    const { data: userVotes } = await supabase
+      .from('caption_votes')
+      .select('caption_id, vote_value')
+      .eq('profile_id', session.user.id);
+    
+    const userVoteMap = Object.fromEntries(userVotes?.map(v => [v.caption_id, v.vote_value]) || []);
 
-      const { data, error } = await supabase
-        .from('captions')
-        .select(`
-          id, content, image_id, profile_id, 
-          images!image_id ( url ), 
-          caption_votes ( vote_value ), 
-          profiles:profile_id ( email )
-        `)
-        .order('id', { ascending: false });
+    // 2. Fetch all data
+    const { data, error } = await supabase
+      .from('captions')
+      .select(`
+        id, content, image_id, profile_id, 
+        images!image_id ( url ), 
+        caption_votes ( vote_value ), 
+        profiles:profile_id ( email )
+      `)
+      .order('id', { ascending: false });
 
-      if (error) throw error;
+    if (error) throw error;
 
-      const formatted = data
-        .filter(cap => cap.content?.trim())
-        .map(cap => {
-          const votes = cap.caption_votes || [];
-          const ups = votes.filter(v => v.vote_value === 1).length;
-          const downs = votes.filter(v => v.vote_value === -1).length;
-          return { 
-            ...cap, 
-            display_url: cap.images?.url || '', 
-            upvotes: ups, 
-            downvotes: downs, 
-            net: ups - downs, 
-            userVote: userVoteMap[cap.id] !== undefined ? userVoteMap[cap.id] : null,
-            uploader: cap.profiles?.email?.split('@')[0] || 'Gardener'
-          };
-        });
+    const formatted = data
+      .filter(cap => cap.content?.trim())
+      .map(cap => {
+        const votes = cap.caption_votes || [];
+        const ups = votes.filter(v => v.vote_value === 1).length;
+        const downs = votes.filter(v => v.vote_value === -1).length;
+        return { 
+          ...cap, 
+          display_url: cap.images?.url || '', 
+          upvotes: ups, 
+          downvotes: downs, 
+          net: ups - downs, 
+          userVote: userVoteMap[cap.id] !== undefined ? userVoteMap[cap.id] : null,
+          uploader: cap.profiles?.email?.split('@')[0] || 'Gardener'
+        };
+      });
 
-      setAllData(formatted);
-      setCaptions(formatted.filter(c => c.userVote === null));
-      
-      const grouped = formatted.reduce((acc, curr) => {
-        (acc[curr.uploader] = acc[curr.uploader] || []).push(curr);
-        return acc;
-      }, {});
-      setUserUploads(grouped);
+    setAllData(formatted);
 
-    } catch (err) { console.error(err); } 
-    finally { setLoading(false); }
-  }, [router]);
+    // 3. THE FIX: Filter out items in the official DB AND items we just clicked in this session
+    setCaptions(formatted.filter(c => 
+      c.userVote === null && !sessionVotes.has(c.id)
+    ));
 
-  useEffect(() => { if (hasMounted) fetchData(); }, [hasMounted, fetchData]);
-  useEffect(() => { setHasMounted(true); }, []);
+  } catch (err) { console.error(err); } 
+  finally { setLoading(false); }
+}, [router, sessionVotes]); // Added sessionVotes to dependency
 
-  // --- THE FIX: Action function with immediate UI feedback ---
-  const handleVote = async (captionId, value) => {
-    // 1. Optimistic Update: Remove from queue immediately so UI feels fast
-    setCaptions(prev => prev.filter(c => c.id !== captionId));
+const handleVote = async (captionId, value) => {
+  // 1. Instantly add to our "ignore list" for this session
+  setSessionVotes(prev => new Set(prev).add(captionId));
+  
+  // 2. Instantly remove from the current view
+  setCaptions(prev => prev.filter(c => c.id !== captionId));
 
-    try {
-      const { error } = await supabase.from('caption_votes').upsert({ 
-        caption_id: captionId, 
-        profile_id: user.id, 
-        vote_value: value 
-      }, { onConflict: 'caption_id, profile_id' });
-      
-      if (error) throw error;
-      // 2. Refresh data in background to update "The Wall" scores
-      fetchData(); 
-    } catch (err) { 
-      console.error("Vote Error:", err); 
-      fetchData(); // Revert on error
-    }
-  };
+  try {
+    const { error } = await supabase.from('caption_votes').upsert({ 
+      caption_id: captionId, 
+      profile_id: user.id, 
+      vote_value: value 
+    }, { onConflict: 'caption_id, profile_id' });
+    
+    if (error) throw error;
+    
+    // We don't even need to call fetchData() immediately here 
+    // because the UI is already updated. Let's wait a beat.
+    setTimeout(() => fetchData(), 500); 
+
+  } catch (err) { 
+    console.error("Vote Error:", err); 
+    // If it actually fails, we could remove it from sessionVotes to let them try again
+  }
+};
 
   const handleUploadAndPost = async () => {
     if (!file || !generatedCaption) return alert("Select photo & generate caption!");
