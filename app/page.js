@@ -7,18 +7,30 @@ export default function DormPulseGarden() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]);
-  const [history, setHistory] = useState([]); // Tracks IDs for Undo
+  const [history, setHistory] = useState([]); 
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState('all'); 
   const [hasMounted, setHasMounted] = useState(false);
   const [swipeDir, setSwipeDir] = useState(''); 
+  const [affirmation, setAffirmation] = useState('');
 
   const router = useRouter();
 
+  // 1. Personalized Affirmations
+  const phrases = [
+    "Every flower blooms in its own time. You are doing great.",
+    "Your presence makes this garden more beautiful.",
+    "Bloom where you are planted, and keep reaching for the sun.",
+    "Like a seedling, you are stronger than you know.",
+    "Take a deep breath. Even the garden rests sometimes.",
+    "You are a rare bloom in a field of ordinary."
+  ];
+
   useEffect(() => {
     setHasMounted(true);
+    setAffirmation(phrases[Math.floor(Math.random() * phrases.length)]);
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -36,13 +48,15 @@ export default function DormPulseGarden() {
 
       const formatted = data.map(cap => {
         const votes = cap.caption_votes || [];
+        const ups = votes.filter(v => v.vote_value === 1).length;
+        const downs = votes.filter(v => v.vote_value === -1).length;
         return {
           ...cap,
           content: cap.content || "",
           display_url: cap.images?.url || 'https://via.placeholder.com/400',
-          upvotes: votes.filter(v => v.vote_value === 1).length,
-          downvotes: votes.filter(v => v.vote_value === -1).length,
-          net: votes.filter(v => v.vote_value === 1).length - votes.filter(v => v.vote_value === -1).length
+          upvotes: ups,
+          downvotes: downs,
+          net: ups - downs
         };
       });
       setCaptions(formatted);
@@ -62,7 +76,7 @@ export default function DormPulseGarden() {
     return list;
   }, [captions, sortMode, searchQuery]);
 
-  // --- NEW LOGIC: VOTE, SKIP, UNDO ---
+  // --- LOGIC: VOTE, SKIP, UNDO ---
 
   const handleVote = async (captionId, value) => {
     setSwipeDir(value === 1 ? 'right' : 'left');
@@ -73,7 +87,7 @@ export default function DormPulseGarden() {
       }, { onConflict: 'caption_id, profile_id' });
       
       setTimeout(() => {
-        setHistory(prev => [...prev, captionId]); // Add to undo stack
+        setHistory(prev => [...prev, captionId]); 
         setCurrentIndex(prev => prev + 1);
         setSwipeDir('');
         fetchData();
@@ -83,26 +97,20 @@ export default function DormPulseGarden() {
 
   const handleSkip = () => {
     const currentCard = captions[currentIndex];
-    const newCaptions = [...captions];
-    // Remove from current spot and push to the very end
-    newCaptions.splice(currentIndex, 1);
-    newCaptions.push(currentCard);
-    setCaptions(newCaptions);
-    // Note: We don't increment currentIndex because the "new" card slides into the current slot
+    const remaining = captions.filter((_, idx) => idx !== currentIndex);
+    setCaptions([...remaining, currentCard]);
+    // The next card naturally slides into the currentIndex slot
   };
 
   const handleUndo = async () => {
     if (history.length === 0 || currentIndex === 0) return;
-    
     const lastId = history[history.length - 1];
-    
-    // 1. Delete the vote from Supabase
-    await supabase.from('caption_votes').delete().match({ caption_id: lastId, profile_id: user.id });
-    
-    // 2. Update UI
-    setHistory(prev => prev.slice(0, -1));
-    setCurrentIndex(prev => prev - 1);
-    fetchData();
+    try {
+      await supabase.from('caption_votes').delete().match({ caption_id: lastId, profile_id: user.id });
+      setHistory(prev => prev.slice(0, -1));
+      setCurrentIndex(prev => prev - 1);
+      fetchData();
+    } catch (err) { console.error(err); }
   };
 
   if (!hasMounted) return null;
@@ -119,16 +127,16 @@ export default function DormPulseGarden() {
           0% { transform: translateY(-10vh) translateX(0) rotate(0); opacity: 1; }
           100% { transform: translateY(110vh) translateX(100px) rotate(360deg); opacity: 0; }
         }
-        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; font-size: 24px; animation: drift 10s linear infinite; z-index: 0; pointer-events: none; }
-        .flower-rotate { animation: slowRotate 50s linear infinite; }
+        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; font-size: 24px; animation: drift 12s linear infinite; z-index: 0; pointer-events: none; }
+        .flower-rotate { animation: slowRotate 60s linear infinite; }
         .swipe-right { animation: swipeRight 0.5s forwards; }
         .swipe-left { animation: swipeLeft 0.5s forwards; }
         @keyframes swipeRight { 100% { transform: translateX(150%) rotate(20deg); opacity: 0; } }
         @keyframes swipeLeft { 100% { transform: translateX(-150%) rotate(-20deg); opacity: 0; } }
       ` }} />
 
-      {[...Array(10)].map((_, i) => (
-        <div key={i} className="petal-drift" style={{ left: `${Math.random() * 100}%`, animationDelay: `${Math.random() * 8}s` }}>🌸</div>
+      {[...Array(8)].map((_, i) => (
+        <div key={i} className="petal-drift" style={{ left: `${Math.random() * 100}%`, animationDelay: `${i * 1.5}s` }}>🌸</div>
       ))}
 
       <nav style={styles.header}><h1 style={styles.logo}>DormPulse.</h1></nav>
@@ -150,20 +158,19 @@ export default function DormPulseGarden() {
                   </div>
                 </div>
 
-                {/* Undo & Skip Row */}
                 <div style={styles.utilityRow}>
                   <button onClick={handleUndo} disabled={history.length === 0} style={{...styles.utilBtn, opacity: history.length === 0 ? 0.3 : 1}}>
                     ↩️ Undo
                   </button>
-                  <button onClick={handleSkip} style={styles.utilBtn}>
+                  <button onClick={handleSkip} style={{...styles.utilBtn, background: '#f3e8ff', borderColor: '#d8b4fe'}}>
                     ⏭️ Skip
                   </button>
                 </div>
               </>
             ) : (
               <div style={styles.doneBox}>
-                <h1 style={{fontSize:'48px'}}>ALL BLOOMED! 🌸</h1>
-                <button onClick={() => {setCurrentIndex(0); setHistory([]);}} style={styles.resetBtn}>Restart Garden</button>
+                <h1 style={{fontSize:'48px', color: '#db2777'}}>ALL BLOOMED! 🌸</h1>
+                <button onClick={() => {setCurrentIndex(0); setHistory([]); fetchData();}} style={styles.resetBtn}>Restart Garden</button>
               </div>
             )}
           </div>
@@ -182,7 +189,7 @@ export default function DormPulseGarden() {
               ].map((petal, i) => (
                 <div key={i} style={{...styles.giantPetal, transform: `rotate(${petal.deg}deg) translateY(-145px)`}} 
                      onClick={() => { setSortMode(petal.mode); setActiveTab('search'); }}>
-                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '12px', fontWeight:'600', color:'#fff', textAlign:'center', padding: '10px'}}>
+                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '11px', fontWeight:'600', color:'#fff', textAlign:'center', lineHeight: '1.2'}}>
                     {petal.lab}
                   </div>
                 </div>
@@ -214,7 +221,8 @@ export default function DormPulseGarden() {
           <div style={styles.centerContainer}>
             <div style={styles.uploadCard}>
               <div style={styles.avatar}>{userName.charAt(0).toUpperCase()}</div>
-              <h3>Hi, {userName}! 🌸</h3>
+              <h3 style={{margin: '0'}}>Hi, {userName}!</h3>
+              <p style={styles.affirmationStyle}>"{affirmation}"</p>
               <button onClick={() => setActiveTab('about')} style={styles.aboutBtn}>Read About Us</button>
               <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>Logout</button>
             </div>
@@ -251,13 +259,9 @@ const styles = {
   logo: { fontSize: '20px', color: '#db2777', fontWeight: '600' },
   content: { minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1 },
   centerContainer: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px' },
-  
-  // GIANT FLOWER
   giantFlowerWrapper: { position: 'relative', width: '150px', height: '150px' },
-  giantPetal: { position: 'absolute', width: '115px', height: '170px', background: 'linear-gradient(to bottom, #ff85a2, #db2777)', borderRadius: '50% 50% 50% 50% / 80% 80% 20% 20%', border: '3px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', left: '17px', boxShadow: '0 8px 20px rgba(219,39,119,0.3)' },
+  giantPetal: { position: 'absolute', width: '115px', height: '175px', background: 'linear-gradient(to bottom, #ff85a2, #db2777)', borderRadius: '50% 50% 50% 50% / 80% 80% 20% 20%', border: '3px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', left: '17px', boxShadow: '0 8px 20px rgba(219,39,119,0.3)' },
   giantCenter: { position: 'absolute', top: '25px', left: '25px', width: '100px', height: '100px', background: '#ffb3c1', borderRadius: '50%', border: '5px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: '600', color: '#db2777', textAlign:'center', zIndex: 10 },
-
-  // HOME CARDS & UTILITY
   pastelCard: { background: '#fff', borderRadius: '35px', width: '100%', maxWidth: '360px', overflow: 'hidden', border: '4px solid #fbcfe8', boxShadow: '0 20px 40px rgba(0,0,0,0.1)' },
   cardImg: { width: '100%', maxHeight: '45vh', objectFit: 'contain', background: '#f9f9f9' },
   cardBody: { padding: '25px', textAlign: 'center' },
@@ -267,8 +271,6 @@ const styles = {
   trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '16px', borderRadius: '20px', border: 'none', fontSize: '20px' },
   utilityRow: { display: 'flex', gap: '40px', marginTop: '25px' },
   utilBtn: { background: 'white', border: '2px solid #fbcfe8', padding: '8px 18px', borderRadius: '15px', color: '#db2777', fontWeight: '600', fontSize: '14px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(0,0,0,0.05)' },
-
-  // FEED & SEARCH
   searchView: { paddingTop: '80px', paddingBottom: '100px', maxWidth: '500px', margin: '0 auto', paddingLeft:'15px', paddingRight:'15px' },
   searchBar: { width: '100%', padding: '15px', borderRadius: '20px', border: '2px solid #fbcfe8', marginBottom: '20px', outline: 'none' },
   fullWidthFeed: { display: 'flex', flexDirection: 'column', gap: '25px' },
@@ -277,15 +279,13 @@ const styles = {
   feedPadding: { padding: '20px' },
   feedText: { fontSize: '18px', fontWeight: '600' },
   voteDisplay: { display: 'flex', gap: '20px', marginTop: '10px', fontWeight: '600', color: '#db2777' },
-
-  // PROFILE & ABOUT
   uploadCard: { background: '#fff', padding: '40px', borderRadius: '40px', textAlign: 'center', border: '3px solid #fbcfe8', width: '100%', maxWidth: '320px' },
   avatar: { width: '80px', height: '80px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', color: '#db2777', fontSize: '30px', fontWeight: '600' },
+  affirmationStyle: { fontStyle: 'italic', color: '#db2777', margin: '15px 0 25px', fontSize: '16px', lineHeight: '1.4' },
   aboutBtn: { display: 'block', width: '100%', margin: '10px 0', padding: '12px', borderRadius: '15px', background: '#fbcfe8', border: 'none', color: '#db2777', fontWeight: '600' },
   logoutBtn: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #db2777', background: 'none', color: '#db2777', fontWeight: '600' },
   aboutCard: { background: '#fff', padding: '40px', borderRadius: '40px', border: '3px solid #fbcfe8', textAlign: 'center', maxWidth: '350px' },
   aboutText: { marginTop: '20px', lineHeight: '1.6', color: '#666', marginBottom: '20px' },
-  
   navBar: { position: 'fixed', bottom: 0, width: '100%', height: '85px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '1px solid #fce7f3', zIndex: 1000 },
   navBtn: { border: 'none', background: 'none', color: '#db2777', fontWeight: '600', fontSize: '11px' },
   loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777' },
