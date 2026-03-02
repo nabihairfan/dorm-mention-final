@@ -83,39 +83,83 @@ export default function DormPulseGarden() {
     } catch (err) { setSwipeDir(''); }
   };
 
-  const handleUploadAndPost = async () => {
+const handleUploadAndPost = async () => {
     if (!selectedFile) return alert("Please pick a photo first!");
     setUploading(true);
+
     try {
-      const fileName = `${Date.now()}_${selectedFile.name}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('garden-photos').upload(fileName, selectedFile);
-      if (uploadError) throw uploadError;
+      // 0. Get your JWT Access Token from Supabase
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not authenticated");
 
-      const { data: { publicUrl } } = supabase.storage.from('garden-photos').getPublicUrl(fileName);
+      // --- STEP 1: Generate Presigned URL ---
+      const step1Res = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ contentType: selectedFile.type })
+      });
+      const { presignedUrl, cdnUrl } = await step1Res.json();
 
-      // GENERATOR LOGIC: Creating a dynamic caption
-      const vibes = ["magical", "cozy", "aesthetic", "vibrant", "peaceful"];
-      const nouns = ["dorm days", "garden moments", "pulses", "memories", "blossoms"];
-      const randomVibe = vibes[Math.floor(Math.random() * vibes.length)];
-      const randomNoun = nouns[Math.floor(Math.random() * nouns.length)];
-      const aiGenerated = `Feeling ${randomVibe} during these ${randomNoun}. 🌸`;
+      // --- STEP 2: Upload Image Bytes directly to S3 ---
+      await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': selectedFile.type },
+        body: selectedFile
+      });
 
-      const finalCaption = postCaption || aiGenerated;
+      // --- STEP 3: Register Image URL with the pipeline ---
+      const step3Res = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ imageUrl: cdnUrl, isCommonUse: false })
+      });
+      const { imageId } = await step3Res.json();
 
-      const { data: imgRow } = await supabase.from('images').insert([{ url: publicUrl }]).select().single();
-      await supabase.from('captions').insert([{ 
-        content: finalCaption, 
-        image_id: imgRow.id, 
-        profile_id: user.id 
-      }]);
+      // --- STEP 4: Generate Captions ---
+      const step4Res = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ imageId: imageId })
+      });
+      
+      const generatedCaptions = await step4Res.json();
+      
+      // The API returns an array of captions. We take the first one and save it to your Supabase DB.
+      // This ensures the caption shows up in your "Garden" forever.
+      if (generatedCaptions && generatedCaptions.length > 0) {
+        const topCaption = generatedCaptions[0].content;
+        
+        // 5. Save the result to your Supabase 'captions' table so it persists in YOUR app
+        const { data: imgRow } = await supabase.from('images').insert([{ url: cdnUrl }]).select().single();
+        await supabase.from('captions').insert([{ 
+          content: topCaption, 
+          image_id: imgRow.id, 
+          profile_id: user.id 
+        }]);
+      }
 
-      alert("Caption Generated & Planted!");
-      setPostCaption(''); setSelectedFile(null);
-      await fetchData();
+      alert("AI Caption Generated & Planted! 🌸");
+      setPostCaption(''); 
+      setSelectedFile(null);
+      await fetchData(); // Refresh feed
       setActiveTab('seeUploads');
-    } catch (err) { console.error(err); }
-    finally { setUploading(false); }
+      
+    } catch (err) {
+      console.error("Pipeline Error:", err);
+      alert("Failed to grow the caption. Check console.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const groupedUploads = useMemo(() => {
