@@ -1,28 +1,22 @@
 'use client';
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { useRouter } from 'next/navigation';
 
-export default function DormPulseGarden() {
+export default function ConfessionsBoard() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [captions, setCaptions] = useState([]);
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [history, setHistory] = useState([]); 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortMode, setSortMode] = useState('all'); 
-  const [hasMounted, setHasMounted] = useState(false);
-  const [swipeDir, setSwipeDir] = useState(''); 
-
-  // Post Tab States
+  const [showWelcome, setShowWelcome] = useState(true);
+  
+  // Pipeline & Upload
   const [uploading, setUploading] = useState(false);
-  const [postCaption, setPostCaption] = useState('');
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [file, setFile] = useState(null);
+  const [newCaptions, setNewCaptions] = useState([]); 
 
   const router = useRouter();
-
-  useEffect(() => { setHasMounted(true); }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -30,239 +24,149 @@ export default function DormPulseGarden() {
       if (!session) return router.push('/login');
       setUser(session.user);
 
-      // Fetch captions AND the votes for the current user
+      // Fetch captions, images, AND the sum of votes for each caption
       const { data, error } = await supabase
         .from('captions')
-        .select(`id, content, profile_id, images!image_id ( url ), caption_votes ( vote_value, profile_id )`)
+        .select(`
+          id, content, image_id,
+          images!image_id ( url ),
+          caption_votes ( vote_value )
+        `)
         .order('id', { ascending: false });
 
       if (error) throw error;
 
       const formatted = data.map(cap => {
-        const votes = cap.caption_votes || [];
-        const ups = votes.filter(v => v.vote_value === 1).length;
-        const downs = votes.filter(v => v.vote_value === -1).length;
-        // Check if THIS specific user has already voted on this caption
-        const hasVoted = votes.some(v => v.profile_id === session.user.id);
+        const imgObj = Array.isArray(cap.images) ? cap.images[0] : cap.images;
+        // Calculate total community score
+        const score = cap.caption_votes?.reduce((acc, v) => acc + v.vote_value, 0) || 0;
         
-        return {
-          ...cap,
-          content: cap.content || "No caption provided",
-          display_url: cap.images?.url || 'https://via.placeholder.com/400',
-          upvotes: ups, downvotes: downs, net: ups - downs,
-          userHasVoted: hasVoted
+        return { 
+          ...cap, 
+          display_url: imgObj?.url || 'https://via.placeholder.com/400?text=Pastel+Vibes',
+          score: score
         };
       });
 
       setCaptions(formatted);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
   }, [router]);
 
-  useEffect(() => { if (hasMounted) fetchData(); }, [hasMounted, fetchData]);
-
-  // Logic: Filter out captions the user has already voted on for the "Vote" tab
-  const unvotedCaptions = useMemo(() => {
-    return captions.filter(c => !c.userHasVoted);
-  }, [captions]);
+  useEffect(() => { 
+    fetchData();
+    // Auto-hide welcome message after 3 seconds
+    const timer = setTimeout(() => setShowWelcome(false), 3500);
+    return () => clearTimeout(timer);
+  }, [fetchData]);
 
   const handleVote = async (captionId, value) => {
-    setSwipeDir(value === 1 ? 'right' : 'left');
-    setHistory(prev => [...prev, currentIndex]);
+    if (!user) return;
     try {
       await supabase.from('caption_votes').upsert({
-        caption_id: captionId, profile_id: user.id, vote_value: value,
+        caption_id: captionId,
+        profile_id: user.id,
+        vote_value: value,
         created_datetime_utc: new Date().toISOString()
       }, { onConflict: 'caption_id, profile_id' });
       
-      setTimeout(() => {
-        // We don't necessarily need to increment index if we re-fetch and filter
-        setSwipeDir('');
-        fetchData(); 
-      }, 450);
-    } catch (err) { setSwipeDir(''); }
+      fetchData(); // Refresh scores
+      setCurrentIndex(prev => (prev + 1) % captions.length);
+    } catch (err) { console.error(err); }
   };
 
-const handleUploadAndPost = async () => {
-    if (!selectedFile) return alert("Please pick a photo first!");
+  const handlePipelineUpload = async () => {
+    if (!file || !user) return;
     setUploading(true);
-
     try {
-      // 0. Get your JWT Access Token from Supabase
       const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      if (!token) throw new Error("Not authenticated");
-
-      // --- STEP 1: Generate Presigned URL ---
-      const step1Res = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
+      const token = session.access_token;
+      
+      const r1 = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ contentType: selectedFile.type })
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contentType: file.type })
       });
-      const { presignedUrl, cdnUrl } = await step1Res.json();
-
-      // --- STEP 2: Upload Image Bytes directly to S3 ---
-      await fetch(presignedUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': selectedFile.type },
-        body: selectedFile
-      });
-
-      // --- STEP 3: Register Image URL with the pipeline ---
-      const step3Res = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
+      const { presignedUrl, cdnUrl } = await r1.json();
+      await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      const r3 = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: cdnUrl, isCommonUse: false })
       });
-      const { imageId } = await step3Res.json();
-
-      // --- STEP 4: Generate Captions ---
-      const step4Res = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ imageId: imageId })
+      const { imageId } = await r3.json();
+      const r4 = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageId })
       });
-      
-      const generatedCaptions = await step4Res.json();
-      
-      // The API returns an array of captions. We take the first one and save it to your Supabase DB.
-      // This ensures the caption shows up in your "Garden" forever.
-      if (generatedCaptions && generatedCaptions.length > 0) {
-        const topCaption = generatedCaptions[0].content;
-        
-        // 5. Save the result to your Supabase 'captions' table so it persists in YOUR app
-        const { data: imgRow } = await supabase.from('images').insert([{ url: cdnUrl }]).select().single();
-        await supabase.from('captions').insert([{ 
-          content: topCaption, 
-          image_id: imgRow.id, 
-          profile_id: user.id 
-        }]);
-      }
-
-      alert("AI Caption Generated & Planted! 🌸");
-      setPostCaption(''); 
-      setSelectedFile(null);
-      await fetchData(); // Refresh feed
-      setActiveTab('seeUploads');
-      
-    } catch (err) {
-      console.error("Pipeline Error:", err);
-      alert("Failed to grow the caption. Check console.");
-    } finally {
-      setUploading(false);
-    }
+      const generated = await r4.json();
+      setNewCaptions(generated);
+      fetchData();
+    } catch (err) { alert("Pipeline error"); }
+    finally { setUploading(false); }
   };
 
-  const groupedUploads = useMemo(() => {
-    const groups = {};
-    captions.forEach(c => {
-      const pid = c.profile_id;
-      if (!groups[pid]) groups[pid] = [];
-      groups[pid].push(c);
-    });
-    return Object.entries(groups).sort(([pidA]) => pidA === user?.id ? -1 : 1);
-  }, [captions, user]);
+  // Helper for Creativity: Emoji based on score
+  const getVibeEmoji = (score) => {
+    if (score > 5) return '👑';
+    if (score > 0) return '✨';
+    if (score < 0) return '💀';
+    return '🧊';
+  };
 
-  const filteredCaptions = useMemo(() => {
-    let list = [...captions];
-    if (sortMode === 'high') list.sort((a, b) => b.net - a.net);
-    if (sortMode === 'low') list.sort((a, b) => a.net - b.net);
-    return list;
-  }, [captions, sortMode]);
-
-  const affirmations = [
-    "You are blooming at your own pace.",
-    "Your garden is beautiful because you are in it.",
-    "Every small pulse is a sign of growth.",
-    "You are a rare and wonderful flower.",
-    "Keep growing, the world needs your light."
-  ];
-
-  if (!hasMounted) return null;
-  if (loading) return <div style={styles.loader}>🌸 Blooming...</div>;
-
-  const userName = user?.user_metadata?.full_name || user?.email?.split('@')[0] || "Gardener";
+  if (loading) return <div style={styles.loader}>🌸 Softening the vibes...</div>;
 
   return (
     <div style={styles.page}>
-      <style dangerouslySetInnerHTML={{ __html: `
-        @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap');
-        @keyframes drift { 0% { transform: translateY(-10vh) rotate(0); } 100% { transform: translateY(110vh) rotate(360deg); } }
-        .petal-drift { position: fixed; top: -10%; color: #fbcfe8; animation: drift 8s linear infinite; z-index: 0; pointer-events: none; }
-        .flower-rotate { animation: slowRotate 50s linear infinite; }
-        @keyframes slowRotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .swipe-right { animation: swipeRight 0.5s forwards; }
-        .swipe-left { animation: swipeLeft 0.5s forwards; }
-        @keyframes swipeRight { 100% { transform: translateX(150%) rotate(20deg); opacity: 0; } }
-        @keyframes swipeLeft { 100% { transform: translateX(-150%) rotate(-20deg); opacity: 0; } }
-      ` }} />
+      <style dangerouslySetInnerHTML={{ __html: `@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@300;600&display=swap');` }} />
 
-      {[...Array(10)].map((_, i) => (
-        <div key={i} className="petal-drift" style={{ left: `${Math.random() * 100}%`, animationDelay: `${Math.random() * 5}s` }}>🌸</div>
-      ))}
+      {/* WELCOME OVERLAY */}
+      {showWelcome && (
+        <div style={styles.welcomeOverlay}>
+          <div style={styles.welcomeBox}>
+            <h1 style={styles.welcomeText}>Welcome to DormPulse, {user?.email?.split('@')[0]}! ✨</h1>
+            <p>Get ready for the best campus memes.</p>
+          </div>
+        </div>
+      )}
 
-      <nav style={styles.header}><h1 style={styles.logo}>DormPulse.</h1></nav>
+      <nav style={styles.header}>
+        <h1 style={styles.logo}>DormPulse.</h1>
+      </nav>
 
       <main style={styles.content}>
-        {/* TAB: VOTE (HOME) */}
+        {/* TAB: VOTE */}
         {activeTab === 'home' && (
-          <div style={styles.centerContainer}>
-            <div style={styles.counterBadge}>{unvotedCaptions.length} New Pulses to Rate 🌷</div>
-            {unvotedCaptions.length > 0 ? (
-              <div style={{width: '100%', maxWidth: '360px'}}>
-                <div className={swipeDir === 'right' ? 'swipe-right' : swipeDir === 'left' ? 'swipe-left' : ''} style={styles.pastelCard}>
-                  <img src={unvotedCaptions[0].display_url} style={styles.cardImg} />
-                  <div style={styles.cardBody}>
-                    <p style={styles.cardCaption}>“{unvotedCaptions[0].content}”</p>
-                    <div style={styles.actionRow}>
-                      <button onClick={() => handleVote(unvotedCaptions[0].id, -1)} style={styles.trashBtn}>👎</button>
-                      <button onClick={() => handleVote(unvotedCaptions[0].id, 1)} style={styles.fireBtn}>💖</button>
-                    </div>
+          <div style={styles.view}>
+            {captions[currentIndex] ? (
+              <div key={captions[currentIndex].id} style={styles.pastelCard}>
+                <img src={captions[currentIndex].display_url} style={styles.cardImg} alt="meme" />
+                <div style={styles.cardBody}>
+                  <p style={styles.cardCaption}>“{captions[currentIndex].content}”</p>
+                  <div style={styles.actionRow}>
+                    <button onClick={() => handleVote(captions[currentIndex].id, -1)} style={styles.trashBtn}>👎 Trash</button>
+                    <button onClick={() => handleVote(captions[currentIndex].id, 1)} style={styles.fireBtn}>💖 Love</button>
                   </div>
                 </div>
               </div>
-            ) : <div style={styles.doneBox}><h1>ALL WATERED! 🌸</h1><p>You've voted on everything in the garden.</p></div>}
+            ) : <p>Loading cards...</p>}
           </div>
         )}
 
-        {/* TAB: GARDEN (BIG FLOWER) */}
+        {/* TAB: THE WALL (With Community Votes) */}
         {activeTab === 'wall' && (
-          <div style={styles.centerContainer}>
-            <div className="flower-rotate" style={styles.giantFlowerWrapper}>
-              {[
-                { deg: 0, lab: 'All Seeds', mode: 'all' },
-                { deg: 120, lab: 'Top Voted', mode: 'high' },
-                { deg: 240, lab: 'Lowest Voted', mode: 'low' },
-              ].map((petal, i) => (
-                <div key={i} style={{...styles.giantPetal, transform: `rotate(${petal.deg}deg) translateY(-140px)`}} 
-                     onClick={() => { setSortMode(petal.mode); setActiveTab('search'); }}>
-                  <div style={{transform: `rotate(-${petal.deg}deg)`, fontSize: '11px', fontWeight:'600', color:'#fff', textAlign:'center'}}>{petal.lab}</div>
-                </div>
-              ))}
-              <div style={styles.giantCenter}>Dorm<br/>Pulse</div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB: SEARCH FEED */}
-        {activeTab === 'search' && (
-          <div style={styles.searchView}>
-            <h2 style={{color: '#db2777', textAlign: 'center'}}>{sortMode === 'low' ? 'Underdog Seeds' : 'Garden Feed'}</h2>
-            {filteredCaptions.map(c => (
-              <div key={c.id} style={styles.feedItem}>
-                <img src={c.display_url} style={styles.feedImg} />
-                <div style={styles.feedPadding}>
-                  <p style={styles.feedText}>“{c.content}”</p>
-                  <div style={styles.voteDisplay}><span>💖 {c.upvotes}</span><span>👎 {c.downvotes}</span></div>
+          <div style={styles.wallGrid}>
+            <h2 style={styles.tabTitle}>Campus Wall</h2>
+            {captions.map(c => (
+              <div key={c.id} style={styles.wallItem}>
+                <img src={c.display_url} style={styles.wallImg} alt="meme" />
+                <div style={styles.wallPadding}>
+                  <p style={styles.wallText}>{c.content}</p>
+                  <div style={styles.scoreTag}>
+                    {getVibeEmoji(c.score)} Community Score: {c.score}
+                  </div>
                 </div>
               </div>
             ))}
@@ -270,29 +174,34 @@ const handleUploadAndPost = async () => {
         )}
 
         {/* TAB: POST */}
-        {activeTab === 'post' && (
-          <div style={styles.centerContainer}>
+        {activeTab === 'upload' && (
+          <div style={styles.view}>
             <div style={styles.uploadCard}>
-              <h2 style={{color: '#db2777'}}>Plant a Memory</h2>
-              <input type="file" accept="image/*" onChange={(e) => setSelectedFile(e.target.files[0])} style={styles.fileInput} />
-              <textarea style={styles.searchBar} placeholder="Leave blank for AI generation..." value={postCaption} onChange={(e) => setPostCaption(e.target.value)} />
-              <button onClick={handleUploadAndPost} disabled={uploading} style={styles.aboutBtn}>
-                {uploading ? "Blooming..." : "✨ Generate & Plant"}
+              <h2 style={styles.tabTitle}>Post a Vibe</h2>
+              <input type="file" onChange={(e) => setFile(e.target.files[0])} style={styles.fileInput} />
+              <button onClick={handlePipelineUpload} disabled={uploading} style={styles.genBtn}>
+                {uploading ? 'Generating...' : 'Magic Upload'}
               </button>
             </div>
+            {newCaptions.length > 0 && (
+              <div style={styles.resultsBox}>
+                <h4 style={{margin:0}}>Generated! ✨</h4>
+                {newCaptions.map((nc, i) => <p key={i} style={{fontSize:'14px'}}>✅ {nc.content}</p>)}
+              </div>
+            )}
           </div>
         )}
 
-        {/* TAB: ME (With Affirmations) */}
+        {/* TAB: ACCOUNT (Requirement: Display Name & Logout) */}
         {activeTab === 'account' && (
-          <div style={styles.centerContainer}>
+          <div style={styles.view}>
             <div style={styles.uploadCard}>
-              <div style={styles.avatar}>{userName.charAt(0).toUpperCase()}</div>
-              <h3>Hi, {userName}!</h3>
-              <div style={styles.affirmationBox}>
-                <p style={{fontStyle: 'italic', color: '#db2777'}}>"{affirmations[Math.floor(Math.random() * affirmations.length)]}"</p>
-              </div>
-              <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>Logout</button>
+              <div style={styles.avatar}>{user?.email?.charAt(0).toUpperCase()}</div>
+              <h2 style={styles.tabTitle}>Hi, {user?.email?.split('@')[0]}!</h2>
+              <p style={{color: '#888'}}>{user?.email}</p>
+              <button onClick={() => { supabase.auth.signOut(); router.push('/login'); }} style={styles.logoutBtn}>
+                Logout
+              </button>
             </div>
           </div>
         )}
@@ -300,48 +209,45 @@ const handleUploadAndPost = async () => {
 
       <nav style={styles.navBar}>
         <button onClick={() => setActiveTab('home')} style={styles.navBtn}>🏠<br/>Vote</button>
-        <button onClick={() => setActiveTab('wall')} style={styles.navBtn}>🌸<br/>Garden</button>
-        <button onClick={() => setActiveTab('post')} style={styles.navBtn}>✨<br/>Post</button>
-        <button onClick={() => setActiveTab('seeUploads')} style={styles.navBtn}>📸<br/>Uploads</button>
+        <button onClick={() => setActiveTab('wall')} style={styles.navBtn}>🧱<br/>Wall</button>
+        <button onClick={() => setActiveTab('upload')} style={styles.navBtn}>➕<br/>Post</button>
         <button onClick={() => setActiveTab('account')} style={styles.navBtn}>👤<br/>Me</button>
       </nav>
     </div>
   );
 }
 
+// PASTEL THEME & LAYOUT FIXES
 const styles = {
-  // ... including existing styles from previous response ...
-  page: { background: '#fff5f7', minHeight: '100vh', fontFamily: "'Fredoka', sans-serif", overflowX: 'hidden' },
-  header: { position: 'fixed', top: 0, width: '100%', height: '60px', background: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #fce7f3', zIndex: 1000 },
-  logo: { fontSize: '20px', color: '#db2777', fontWeight: '600' },
-  content: { minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1 },
-  centerContainer: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px 100px' },
-  counterBadge: { background: '#fbcfe8', padding: '10px 20px', borderRadius: '20px', color: '#db2777', fontWeight: '600', marginBottom: '20px' },
-  pastelCard: { background: '#fff', borderRadius: '35px', width: '100%', overflow: 'hidden', border: '4px solid #fbcfe8', boxShadow: '0 20px 40px rgba(0,0,0,0.1)' },
-  cardImg: { width: '100%', maxHeight: '45vh', objectFit: 'cover' },
+  page: { background: '#fdf2f8', minHeight: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Fredoka', sans-serif" },
+  welcomeOverlay: { position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.9)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fadeOut 0.5s forwards 3s' },
+  welcomeBox: { textAlign: 'center', padding: '40px', background: '#fff', borderRadius: '30px', border: '5px solid #fbcfe8' },
+  welcomeText: { color: '#db2777', margin: 0 },
+  header: { position: 'fixed', top: 0, width: '100%', height: '70px', background: 'rgba(255,255,255,0.8)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '2px solid #fce7f3', zIndex: 1000 },
+  logo: { fontSize: '24px', color: '#db2777', fontWeight: '600' },
+  content: { paddingTop: '90px', paddingBottom: '100px', maxWidth: '450px', width: '100%', margin: '0 auto', paddingLeft: '15px', paddingRight: '15px' },
+  view: { width: '100%' },
+  tabTitle: { textAlign: 'center', color: '#be185d', margin: '0 0 20px 0' },
+  pastelCard: { background: '#fff', borderRadius: '30px', border: '3px solid #fbcfe8', overflow: 'hidden', boxShadow: '0 10px 25px rgba(219,39,119,0.1)' },
+  cardImg: { width: '100%', maxHeight: '50vh', objectFit: 'cover' },
   cardBody: { padding: '25px', textAlign: 'center' },
-  cardCaption: { fontSize: '20px', fontWeight: '600', color: '#333' },
-  actionRow: { display: 'flex', gap: '15px', marginTop: '15px' },
-  fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '16px', borderRadius: '20px', border: 'none', cursor: 'pointer' },
-  trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '16px', borderRadius: '20px', border: 'none', cursor: 'pointer' },
-  navBar: { position: 'fixed', bottom: 0, width: '100%', height: '85px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '1px solid #fce7f3', zIndex: 1000 },
-  navBtn: { border: 'none', background: 'none', color: '#db2777', fontWeight: '600', fontSize: '11px', cursor: 'pointer' },
-  uploadCard: { background: '#fff', padding: '30px', borderRadius: '30px', textAlign: 'center', border: '3px solid #fbcfe8', width: '100%', maxWidth: '400px' },
-  fileInput: { margin: '20px 0', fontSize: '14px' },
-  searchBar: { width: '100%', padding: '15px', borderRadius: '15px', border: '2px solid #fbcfe8', marginBottom: '15px', outline: 'none', resize: 'none' },
-  aboutBtn: { width: '100%', padding: '15px', borderRadius: '15px', background: '#db2777', color: '#fff', border: 'none', fontWeight: '600', cursor: 'pointer' },
-  affirmationBox: { padding: '15px', background: '#fff5f7', borderRadius: '15px', margin: '15px 0' },
-  logoutBtn: { width: '100%', padding: '12px', borderRadius: '15px', border: '2px solid #db2777', background: 'none', color: '#db2777', fontWeight: '600', cursor: 'pointer' },
-  avatar: { width: '80px', height: '80px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px', color: '#db2777', fontSize: '30px', fontWeight: '600' },
-  searchView: { paddingTop: '80px', paddingBottom: '100px', width: '100%', maxWidth: '500px', margin: '0 auto' },
-  feedItem: { background: '#fff', borderRadius: '25px', marginBottom: '20px', overflow: 'hidden', border: '2px solid #fce7f3' },
-  feedImg: { width: '100%', height: 'auto' },
-  feedPadding: { padding: '15px' },
-  feedText: { fontWeight: '600', fontSize: '16px' },
-  voteDisplay: { display: 'flex', gap: '15px', marginTop: '10px', color: '#db2777', fontWeight: '600' },
-  giantFlowerWrapper: { position: 'relative', width: '150px', height: '150px' },
-  giantPetal: { position: 'absolute', width: '110px', height: '160px', background: 'linear-gradient(to bottom, #ff85a2, #db2777)', borderRadius: '50% 50% 50% 50% / 80% 80% 20% 20%', border: '3px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', left: '20px' },
-  giantCenter: { position: 'absolute', top: '25px', left: '25px', width: '100px', height: '100px', background: '#ffb3c1', borderRadius: '50%', border: '5px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: '600', color: '#db2777', textAlign:'center', zIndex: 10 },
-  doneBox: { textAlign: 'center', color: '#db2777' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777' }
+  cardCaption: { fontSize: '20px', fontWeight: '600', color: '#444' },
+  actionRow: { display: 'flex', gap: '15px', marginTop: '10px' },
+  fireBtn: { flex: 1, background: '#fbcfe8', color: '#db2777', padding: '15px', borderRadius: '20px', border: 'none', fontWeight: '600', cursor: 'pointer' },
+  trashBtn: { flex: 1, background: '#f3f4f6', color: '#6b7280', padding: '15px', borderRadius: '20px', border: 'none', fontWeight: '600', cursor: 'pointer' },
+  wallGrid: { display: 'flex', flexDirection: 'column', gap: '20px' },
+  wallItem: { background: '#fff', borderRadius: '25px', border: '2px solid #fce7f3', overflow: 'hidden' },
+  wallImg: { width: '100%', borderBottom: '1px solid #fce7f3' },
+  wallPadding: { padding: '15px' },
+  wallText: { fontWeight: '600', color: '#333' },
+  scoreTag: { marginTop: '8px', fontSize: '12px', background: '#fdf2f8', color: '#db2777', padding: '5px 12px', borderRadius: '50px', display: 'inline-block' },
+  uploadCard: { background: '#fff', padding: '30px', borderRadius: '30px', border: '3px solid #fbcfe8', textAlign: 'center' },
+  fileInput: { marginBottom: '20px', width: '100%' },
+  genBtn: { width: '100%', padding: '15px', background: '#db2777', color: '#fff', borderRadius: '20px', border: 'none', fontWeight: '600', fontSize: '18px' },
+  resultsBox: { marginTop: '20px', padding: '15px', background: '#f0fdf4', borderRadius: '20px', border: '2px dashed #4ade80' },
+  avatar: { width: '60px', height: '60px', background: '#fbcfe8', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 15px', fontSize: '24px', color: '#db2777', fontWeight: '600' },
+  logoutBtn: { marginTop: '20px', background: '#fff', border: '2px solid #db2777', color: '#db2777', padding: '10px 25px', borderRadius: '15px', fontWeight: '600', cursor: 'pointer' },
+  navBar: { position: 'fixed', bottom: 0, width: '100%', height: '80px', background: '#fff', display: 'flex', justifyContent: 'space-around', alignItems: 'center', borderTop: '2px solid #fce7f3', zIndex: 1000 },
+  navBtn: { border: 'none', background: 'none', textAlign: 'center', color: '#db2777', fontWeight: '600', fontSize: '12px', cursor: 'pointer' },
+  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777', fontSize: '20px' }
 };
