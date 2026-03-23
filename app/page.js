@@ -33,7 +33,13 @@ export default function DormPulseGarden() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (!session) return router.push('/login');
+
+      // FIX: return early after redirect so no further code executes
+      if (!session) {
+        router.push('/login');
+        return;
+      }
+
       setUser(session.user);
 
       const { data, error } = await supabase
@@ -73,11 +79,11 @@ export default function DormPulseGarden() {
     fetchData();
   }, [fetchData]);
 
+  // Restore skipped IDs from localStorage
   useEffect(() => {
     if (!storageKey) return;
     const saved = localStorage.getItem(storageKey);
     if (!saved) return;
-
     try {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) setSkippedIds(parsed);
@@ -86,6 +92,7 @@ export default function DormPulseGarden() {
     }
   }, [storageKey]);
 
+  // Persist skipped IDs to localStorage
   useEffect(() => {
     if (!storageKey) return;
     localStorage.setItem(storageKey, JSON.stringify(skippedIds));
@@ -96,7 +103,6 @@ export default function DormPulseGarden() {
   const voteQueue = useMemo(() => {
     const pending = unvotedCaptions.filter((c) => !skippedIds.includes(c.id));
     const skippedPending = unvotedCaptions.filter((c) => skippedIds.includes(c.id));
-
     const queue = [...pending, ...skippedPending];
 
     if (focusedCaptionId) {
@@ -112,6 +118,8 @@ export default function DormPulseGarden() {
 
   const currentCaption = voteQueue[0] || null;
 
+  // FIX: Added created_by_user_id and modified_by_user_id to the upsert payload.
+  // FIX: Removed space in onConflict string ('caption_id,profile_id' not 'caption_id, profile_id').
   const handleVote = async (captionId, value) => {
     setHistory((prev) => [...prev, { id: captionId }]);
 
@@ -123,9 +131,10 @@ export default function DormPulseGarden() {
             caption_id: captionId,
             profile_id: user.id,
             vote_value: value,
-            created_datetime_utc: new Date().toISOString(),
+            created_by_user_id: user.id,
+            modified_by_user_id: user.id,
           },
-          { onConflict: 'caption_id, profile_id' }
+          { onConflict: 'caption_id,profile_id' }
         );
 
       if (error) throw error;
@@ -135,6 +144,7 @@ export default function DormPulseGarden() {
       await fetchData();
     } catch (err) {
       console.error('Vote Error:', err);
+      alert(`Vote failed: ${err.message}`);
     }
   };
 
@@ -147,6 +157,7 @@ export default function DormPulseGarden() {
         .from('caption_votes')
         .delete()
         .match({ caption_id: lastAction.id, profile_id: user.id });
+
       if (error) throw error;
 
       setHistory((prev) => prev.slice(0, -1));
@@ -155,6 +166,7 @@ export default function DormPulseGarden() {
       await fetchData();
     } catch (err) {
       console.error('Undo Error:', err);
+      alert(`Undo failed: ${err.message}`);
     }
   };
 
@@ -164,6 +176,8 @@ export default function DormPulseGarden() {
     setFocusedCaptionId(null);
   };
 
+  // FIX: Added created_by_user_id and modified_by_user_id to both the images and captions inserts.
+  // These are non-nullable fields in the DB — omitting them caused INSERT to fail with a DB error.
   const handlePipelineUpload = async () => {
     if (!file || !user) return;
     setUploading(true);
@@ -174,6 +188,7 @@ export default function DormPulseGarden() {
       if (!session?.access_token) throw new Error('Missing auth session. Please log in again.');
       const token = session.access_token;
 
+      // Step 1: Get presigned URL
       const r1 = await fetch('https://api.almostcrackd.ai/pipeline/generate-presigned-url', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -183,9 +198,11 @@ export default function DormPulseGarden() {
       const { presignedUrl, cdnUrl } = await r1.json();
       if (!presignedUrl || !cdnUrl) throw new Error('Upload URL response was incomplete.');
 
+      // Step 2: Upload file to presigned URL
       const r2 = await fetch(presignedUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
       if (!r2.ok) throw new Error('Failed to upload image file.');
 
+      // Step 3: Register image with pipeline API
       const r3 = await fetch('https://api.almostcrackd.ai/pipeline/upload-image-from-url', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -195,6 +212,7 @@ export default function DormPulseGarden() {
       const { imageId } = await r3.json();
       if (!imageId) throw new Error('Image registration did not return an imageId.');
 
+      // Step 4: Generate captions via pipeline API
       const r4 = await fetch('https://api.almostcrackd.ai/pipeline/generate-captions', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -204,15 +222,29 @@ export default function DormPulseGarden() {
       const generated = await r4.json();
 
       if (generated && generated.length > 0) {
-        const { data: imgData, error: imgErr } = await supabase.from('images').insert([{ url: cdnUrl }]).select().single();
+        // Step 5: Insert image row — must include created_by_user_id and modified_by_user_id
+        const { data: imgData, error: imgErr } = await supabase
+          .from('images')
+          .insert([
+            {
+              url: cdnUrl,
+              created_by_user_id: user.id,
+              modified_by_user_id: user.id,
+            },
+          ])
+          .select()
+          .single();
         if (imgErr) throw imgErr;
 
+        // Step 6: Insert caption row — must include created_by_user_id and modified_by_user_id
         const { error: capErr } = await supabase.from('captions').insert([
           {
             content: generated[0].content,
             image_id: imgData.id,
             profile_id: user.id,
             is_public: true,
+            created_by_user_id: user.id,
+            modified_by_user_id: user.id,
           },
         ]);
         if (capErr) throw capErr;
@@ -251,7 +283,7 @@ export default function DormPulseGarden() {
   const gardenCaptions = useMemo(() => {
     if (gardenMode === 'high') return [...captions].sort((a, b) => b.score - a.score);
     if (gardenMode === 'low') return [...captions].sort((a, b) => a.score - b.score);
-    return captions;
+    return [...captions]; // return a copy for consistency
   }, [captions, gardenMode]);
 
   const userEmailName = user?.email?.split('@')?.[0] || 'gardener';
@@ -265,6 +297,8 @@ export default function DormPulseGarden() {
         <h1 style={styles.logo}>DormPulse.</h1>
       </nav>
 
+      {/* FIX: content style had 'padding: 15px' overriding paddingTop/paddingBottom,
+          causing the card to render under the top navbar. Now uses explicit padding props. */}
       <main style={styles.content}>
         {activeTab === 'home' && (
           <div style={styles.view}>
@@ -274,7 +308,7 @@ export default function DormPulseGarden() {
                 <div style={styles.pastelCard}>
                   <img src={currentCaption.display_url} style={styles.cardImg} alt="meme" />
                   <div style={styles.cardBody}>
-                    <p style={styles.cardCaption}>“{currentCaption.content}”</p>
+                    <p style={styles.cardCaption}>"{currentCaption.content}"</p>
                     <div style={styles.actionRow}>
                       <button onClick={() => handleVote(currentCaption.id, -1)} style={styles.trashBtn}>
                         👎
@@ -296,7 +330,8 @@ export default function DormPulseGarden() {
               </>
             ) : (
               <div style={styles.doneBox}>
-                <h3>All Watered!</h3>
+                <h3>All Watered! 🌸</h3>
+                <p style={{ color: '#9d174d', fontSize: '14px' }}>Check back later for new captions.</p>
               </div>
             )}
           </div>
@@ -314,16 +349,24 @@ export default function DormPulseGarden() {
                   if (e.key === 'Enter') executeSearch();
                 }}
               />
-              <button style={styles.searchBtn} onClick={executeSearch}>Search</button>
+              <button style={styles.searchBtn} onClick={executeSearch}>
+                Search
+              </button>
             </div>
 
-            {!hasSearched && <p style={styles.helperText}>Type a phrase and click Search to find matching captions.</p>}
-            {hasSearched && searchResults.length === 0 && <p style={styles.helperText}>No captions matched your search.</p>}
+            {!hasSearched && (
+              <p style={styles.helperText}>Type a phrase and click Search to find matching captions.</p>
+            )}
+            {hasSearched && searchResults.length === 0 && (
+              <p style={styles.helperText}>No captions matched your search.</p>
+            )}
 
             {searchResults.map((c) => (
               <div key={c.id} style={styles.feedItem}>
                 <img src={c.display_url} style={{ width: '100%' }} alt="caption result" />
-                <p style={{ padding: '10px' }}>“{c.content}” — ⭐ {c.score}</p>
+                <p style={{ padding: '10px' }}>
+                  "{c.content}" — ⭐ {c.score}
+                </p>
               </div>
             ))}
           </div>
@@ -379,8 +422,8 @@ export default function DormPulseGarden() {
                 <p>{`"${affirmations[Math.floor(Math.random() * affirmations.length)]}"`}</p>
               </div>
               <button
-                onClick={() => {
-                  supabase.auth.signOut();
+                onClick={async () => {
+                  await supabase.auth.signOut();
                   router.push('/login');
                 }}
                 style={styles.logoutBtn}
@@ -394,29 +437,19 @@ export default function DormPulseGarden() {
 
       <nav style={styles.navBar}>
         <button onClick={() => setActiveTab('home')} style={styles.navBtn}>
-          🏠
-          <br />
-          Vote
+          🏠<br />Vote
         </button>
         <button onClick={() => setActiveTab('search')} style={styles.navBtn}>
-          🔍
-          <br />
-          Search
+          🔍<br />Search
         </button>
         <button onClick={() => setActiveTab('upload')} style={styles.navBtn}>
-          ➕
-          <br />
-          Post
+          ➕<br />Post
         </button>
         <button onClick={() => setActiveTab('wall')} style={styles.navBtn}>
-          🌺
-          <br />
-          Garden
+          🌺<br />Garden
         </button>
         <button onClick={() => setActiveTab('account')} style={styles.navBtn}>
-          👤
-          <br />
-          Me
+          👤<br />Me
         </button>
       </nav>
     </div>
@@ -438,7 +471,17 @@ const styles = {
     zIndex: 1000,
   },
   logo: { fontSize: '20px', color: '#db2777', fontWeight: '600' },
-  content: { paddingTop: '80px', paddingBottom: '120px', maxWidth: '420px', margin: '0 auto', padding: '15px' },
+  // FIX: was { paddingTop: '80px', paddingBottom: '120px', maxWidth: '420px', margin: '0 auto', padding: '15px' }
+  // The shorthand 'padding: 15px' was overriding paddingTop and paddingBottom entirely,
+  // so the content was hidden under the fixed header and bottom navbar.
+  content: {
+    paddingTop: '80px',
+    paddingBottom: '120px',
+    paddingLeft: '15px',
+    paddingRight: '15px',
+    maxWidth: '420px',
+    margin: '0 auto',
+  },
   view: { width: '100%' },
   counter: {
     textAlign: 'center',
@@ -474,7 +517,15 @@ const styles = {
     fontWeight: '700',
     cursor: 'pointer',
   },
-  trashBtn: { flex: 1, background: '#f3f4f6', border: 'none', padding: '12px', borderRadius: '15px', color: '#666', cursor: 'pointer' },
+  trashBtn: {
+    flex: 1,
+    background: '#f3f4f6',
+    border: 'none',
+    padding: '12px',
+    borderRadius: '15px',
+    color: '#666',
+    cursor: 'pointer',
+  },
   undoBtn: {
     background: 'none',
     border: 'none',
@@ -486,10 +537,30 @@ const styles = {
   },
   searchRow: { display: 'flex', gap: '8px', marginBottom: '10px' },
   searchBar: { flex: 1, padding: '12px', borderRadius: '15px', border: '2px solid #fbcfe8', outline: 'none' },
-  searchBtn: { border: 'none', borderRadius: '12px', background: '#db2777', color: '#fff', padding: '0 14px', fontWeight: '700', cursor: 'pointer' },
+  searchBtn: {
+    border: 'none',
+    borderRadius: '12px',
+    background: '#db2777',
+    color: '#fff',
+    padding: '0 14px',
+    fontWeight: '700',
+    cursor: 'pointer',
+  },
   helperText: { color: '#9d174d', fontSize: '13px', marginBottom: '10px' },
-  feedItem: { background: '#fff', borderRadius: '20px', marginBottom: '15px', overflow: 'hidden', border: '1px solid #fce7f3' },
-  uploadCard: { background: '#fff', padding: '25px', borderRadius: '25px', border: '3px solid #fbcfe8', textAlign: 'center' },
+  feedItem: {
+    background: '#fff',
+    borderRadius: '20px',
+    marginBottom: '15px',
+    overflow: 'hidden',
+    border: '1px solid #fce7f3',
+  },
+  uploadCard: {
+    background: '#fff',
+    padding: '25px',
+    borderRadius: '25px',
+    border: '3px solid #fbcfe8',
+    textAlign: 'center',
+  },
   fileInput: { marginBottom: '15px', width: '100%' },
   genBtn: {
     width: '100%',
@@ -526,7 +597,13 @@ const styles = {
     boxShadow: '0 8px 24px rgba(0,0,0,0.08)',
   },
   gardenGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px' },
-  miniCard: { minWidth: '100px', background: '#fff', borderRadius: '10px', overflow: 'hidden', border: '1px solid #eee' },
+  miniCard: {
+    minWidth: '100px',
+    background: '#fff',
+    borderRadius: '10px',
+    overflow: 'hidden',
+    border: '1px solid #eee',
+  },
   miniImg: { width: '100%', height: '150px', objectFit: 'cover' },
   affirmationBox: {
     background: '#fff5f7',
@@ -569,8 +646,21 @@ const styles = {
     alignItems: 'center',
     borderTop: '1px solid #fce7f3',
   },
-  navBtn: { border: 'none', background: 'none', color: '#db2777', fontSize: '10px', fontWeight: '600', cursor: 'pointer' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#db2777' },
+  navBtn: {
+    border: 'none',
+    background: 'none',
+    color: '#db2777',
+    fontSize: '10px',
+    fontWeight: '600',
+    cursor: 'pointer',
+  },
+  loader: {
+    height: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#db2777',
+  },
   title: { color: '#db2777', fontSize: '18px', marginBottom: '15px' },
   doneBox: { textAlign: 'center', padding: '50px', color: '#db2777' },
 };
